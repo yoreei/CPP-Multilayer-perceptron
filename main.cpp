@@ -3,7 +3,9 @@
 #include <fstream>
 #include <vector>
 #include <cstdint>
-using namespace std;
+#include <numeric>
+#include <ranges>
+#include <algorithm>
 using namespace DirectX;
 
 // Helper function to swap endianess (if needed)
@@ -20,16 +22,18 @@ public:
 	MLP() {
 		train = Dataset("assets.ignored/train-images.idx3-ubyte", "assets.ignored/train-labels.idx1-ubyte");
 		test = Dataset("assets.ignored/t10k-images.idx3-ubyte", "assets.ignored/t10k-labels.idx1-ubyte");
+		train.statistics();
+		test.statistics();
 
 	}
 
 	struct Dataset {
 		Dataset() = default;
-		Dataset(const string& dataFile, const string& labelFile) {
-			cout << "loading " << dataFile << endl;
-			ifstream dataIfstream(dataFile, ios::binary);
+		Dataset(const std::string& dataFile, const std::string& labelFile) {
+			std:: cout << "loading " << dataFile << std::endl;
+			std::ifstream dataIfstream(dataFile, std::ios::binary);
 			if (!dataIfstream) {
-				cerr << "Unable to open file!" << endl;
+				std::cerr << "Unable to open file!" << std::endl;
 				exit(-1);
 			}
 
@@ -55,22 +59,22 @@ public:
 
 			data.resize(numImages * numRows * numCols);
 			labels.resize(numImages);
-			dataIfstream.read(reinterpret_cast<char*>(data.data()), data.size());
+			for (size_t i = 0; i < data.size(); ++i) {
+				char byte;
+				dataIfstream.read(&byte, sizeof(char));
+				data[i] = static_cast<unsigned char>(byte) / 255.0;
 
-			std::streamsize bytesRead = dataIfstream.gcount();
-			if (bytesRead != static_cast<std::streamsize>(data.size())) {
-				std::cerr << "Error: Only " << bytesRead
-					<< " bytes were read, but "
-					<< data.size()
-					<< " bytes were expected." << std::endl;
-				exit(-1);
+				if (!dataIfstream) {
+					std::cerr << "Error reading byte " << i << std::endl;
+					exit(-1);
+				}
 			}
 
 			//v * Labels
-			cout << "loading " << labelFile << endl;
-			ifstream labelIfstream(labelFile, ios::binary);
+			std::cout << "loading " << labelFile << std::endl;
+			std::ifstream labelIfstream(labelFile, std::ios::binary);
 			if (!labelIfstream) {
-				cerr << "Unable to open file!" << endl;
+				std::cerr << "Unable to open file!" << std::endl;
 				exit(-1);
 			}
 
@@ -88,13 +92,13 @@ public:
 			std::cout << "Number of Labels: " << numLabels << "\n";
 
 			if (numLabels != numImages) {
-				cerr << "numLabels != numImages\n";
+				std::cerr << "numLabels != numImages\n";
 				exit(-1);
 			}
 
 			labelIfstream.read(reinterpret_cast<char*>(labels.data()), labels.size());
 
-			bytesRead = labelIfstream.gcount();
+			std::streamsize bytesRead = labelIfstream.gcount();
 			if (bytesRead != static_cast<std::streamsize>(labels.size())) {
 				std::cerr << "Error: Only " << bytesRead
 					<< " bytes were read, but "
@@ -105,9 +109,15 @@ public:
 
 
 		}
+
+		void statistics() {
+			std::cout << "mean: " << ( std::accumulate(data.begin(), data.end(), 0.0) / double(data.size()) ) << std::endl;
+			const auto [min, max] = std::minmax_element(data.begin(), data.end());
+			std::cout << "min: " << *min << ", max: " << *max << std::endl;
+		}
 		uint32_t numImages = 0, numRows = 0, numCols = 0;
-		vector<unsigned char> data;
-		vector<unsigned char> labels;
+		std::vector<float> data;
+		std::vector<unsigned char> labels;
 		unsigned char getData(uint64_t imgId, uint64_t y, uint64_t x) const {
 			int imgSize = numRows * numCols;
 			return data[imgId * imgSize + y * numCols + x];
