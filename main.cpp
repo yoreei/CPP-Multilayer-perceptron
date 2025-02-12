@@ -169,32 +169,29 @@ struct Dataset {
 		return data(imgId, y * numCols + x);
 	}
 
-	size_t numRows = 0, numCols = 0;
+	uint32_t numRows = 0, numCols = 0; //< must be unit32_t to read from file properly!!!
 	MlpMatrix data;  // Data matrix (numImages x (numRows*numCols))
 	MlpVectori labels;        // Label vector (numImages x 1)
 };
 
 class MLP {
 public:
-	MLP(size_t hiddenSize, float lr) : lr(lr) {
-		trainData = Dataset("assets.ignored/train-images.idx3-ubyte", "assets.ignored/train-labels.idx1-ubyte");
+	MLP(size_t inputSize, size_t hiddenSize, size_t outputSize, float lr) : lr(lr) {
 
-		const auto [_, maxLabel] = std::minmax_element(trainData.labels.begin(), trainData.labels.end());
 
 		srand(42);
 		// Initialize weight_1: values in [-1,1] scaled to [-0.01, 0.01]
-		weight_1 = MlpMatrix::Random(trainData.numRows * trainData.numCols, hiddenSize) * 0.01;
+		weight_1 = MlpMatrix::Random(inputSize, hiddenSize) * 0.01;
 
 		// Initialize bias_1: values in [0,1)
 		bias_1 = (MlpRowVectorf::Random(hiddenSize).array() + 1.f) / 2.f;
 
 		// Initialize weight_2: values in [-0.01, 0.01]
-		weight_2 = MlpMatrix::Random(hiddenSize, *maxLabel) * 0.01;
+		weight_2 = MlpMatrix::Random(hiddenSize, outputSize) * 0.01;
 
 		// Initialize bias_2: values in [0,1)
-		bias_2 = (MlpRowVectorf::Random(*maxLabel).array() + 1.f) / 2.f;
+		bias_2 = (MlpRowVectorf::Random(outputSize).array() + 1.f) / 2.f;
 
-		trainData.statistics();
 
 		std::cout << "weight_1 (first 5 rows):\n" << weight_1.topRows(5) << "\n\n";
 		std::cout << "bias_1:\n" << bias_1 << "\n\n";
@@ -215,7 +212,7 @@ public:
 
 	void backward(const Eigen::Ref<const MlpMatrix>& X, const Eigen::Ref<const MlpVectori>& y, const MlpMatrix& output) {
 		int m = y.size();      // mini-batch size
-		int num_classes = output.cols();  // e.g., 10
+		int num_classes = output.cols();
 
 		// 1. One-hot encode the true labels.
 		// Create an m x num_classes matrix initialized to zeros.
@@ -246,7 +243,7 @@ public:
 		bias_2 -= lr * dL_db2;
 	}
 
-	void train(int epochs = 10, int batch_size = 128) {
+	void train(const Dataset& trainData, int epochs = 10, int batch_size = 128) {
 		int num_samples = trainData.data.rows();
 		for (int epoch = 0; epoch < epochs; ++epoch) {
 			// Loop over mini-batches.
@@ -291,7 +288,6 @@ public:
 		return predictions;
 	}
 
-	Dataset trainData;
 	float lr;
 
 	MlpMatrix weight_1; //< dim [inputSize x hiddenSize]
@@ -308,10 +304,21 @@ public:
 };
 
 int main() {
+	Eigen::setNbThreads(32);
+	std::cout << "Eigen is using " << Eigen::nbThreads() << " threads.\n";
+
+	Dataset trainData = Dataset("assets.ignored/train-images.idx3-ubyte", "assets.ignored/train-labels.idx1-ubyte");
 	Dataset testData = Dataset("assets.ignored/t10k-images.idx3-ubyte", "assets.ignored/t10k-labels.idx1-ubyte");
 	testData.statistics();
-	MLP mlp{ 128, 0.01f };
-	mlp.train(3, 64);
+	trainData.statistics();
+
+	size_t inputSize = trainData.numRows * trainData.numCols;
+	size_t hiddenSize = 128;
+	const auto [_, maxLabel] = std::minmax_element(trainData.labels.begin(), trainData.labels.end());
+	size_t outputSize = *maxLabel + 1;
+	MLP mlp{ inputSize, hiddenSize, outputSize, 0.01f };
+
+	mlp.train(trainData, 50, 64);
 	MlpVectori predictions = mlp.predict(testData.data);
 	double accuracy = (predictions.array() == testData.labels.array()).cast<double>().mean();
 	std::cout << "Test Accuracy: " << accuracy << std::endl;
