@@ -7,6 +7,15 @@
 #include <algorithm>
 #include "Eigen/Dense"
 
+#include <chrono>
+using Time = std::chrono::time_point<std::chrono::high_resolution_clock>;
+
+Time getTime() {
+	return std::chrono::high_resolution_clock::now();
+}
+using Milli = std::chrono::duration<double, std::milli>;
+using Seconds = std::chrono::duration<double, std::ratio<1>>;
+
 using namespace Eigen;
 using MlpMatrix = MatrixXf;
 using MlpVectorf = VectorXf;
@@ -192,12 +201,11 @@ public:
 		// Initialize bias_2: values in [0,1)
 		bias_2 = (MlpRowVectorf::Random(outputSize).array() + 1.f) / 2.f;
 
-
-		std::cout << "weight_1 (first 5 rows):\n" << weight_1.topRows(5) << "\n\n";
-		std::cout << "bias_1:\n" << bias_1 << "\n\n";
-		std::cout << "weight_2 (first 5 rows):\n" << weight_2.topRows(5) << "\n\n";
-		std::cout << "reluWeight_2:\n" << relu(weight_2.topRows(5)) << "\n\n";
-		std::cout << "bias_2:\n" << bias_2 << "\n";
+		//std::cout << "weight_1 (first 5 rows):\n" << weight_1.topRows(5) << "\n\n";
+		//std::cout << "bias_1:\n" << bias_1 << "\n\n";
+		//std::cout << "weight_2 (first 5 rows):\n" << weight_2.topRows(5) << "\n\n";
+		//std::cout << "reluWeight_2:\n" << relu(weight_2.topRows(5)) << "\n\n";
+		//std::cout << "bias_2:\n" << bias_2 << "\n";
 
 	}
 
@@ -216,26 +224,26 @@ public:
 
 		// 1. One-hot encode the true labels.
 		// Create an m x num_classes matrix initialized to zeros.
-		MlpMatrix y_one_hot = MlpMatrix::Zero(m, num_classes);
+		y_one_hot = MlpMatrix::Zero(m, num_classes);
 		for (int i = 0; i < m; ++i) {
 			// Set the column corresponding to the true label to 1.
 			y_one_hot(i, y(i)) = 1.0f;
 		}
 
 		// 2. Compute gradient at output layer:
-		MlpMatrix dL_dz2 = output - y_one_hot;
+		dL_dz2 = output - y_one_hot;
 
 		// 3. Gradients for the second (output) layer:
-		MlpMatrix dL_dW2 = (a1.transpose() * dL_dz2) / m;
-		MlpMatrix dL_db2 = dL_dz2.colwise().sum() / m;
+		dL_dW2 = (a1.transpose() * dL_dz2) / m;
+		dL_db2 = dL_dz2.colwise().sum() / m;
 
 		// 4. Backpropagate to the hidden layer:
-		MlpMatrix dL_da1 = dL_dz2 * weight_2.transpose();
-		MlpMatrix dL_dz1 = dL_da1.array() * (z1.array() > 0).cast<float>();
+		dL_da1 = dL_dz2 * weight_2.transpose();
+		dL_dz1 = dL_da1.array() * (z1.array() > 0).cast<float>();
 
 		// 5. Gradients for the first (hidden) layer:
-		MlpMatrix dL_dW1 = (X.transpose() * dL_dz1) / m;
-		MlpMatrix dL_db1 = dL_dz1.colwise().sum() / m;
+		dL_dW1 = (X.transpose() * dL_dz1) / m;
+		dL_db1 = dL_dz1.colwise().sum() / m;
 
 		weight_1 -= lr * dL_dW1;
 		bias_1 -= lr * dL_db1;
@@ -243,7 +251,21 @@ public:
 		bias_2 -= lr * dL_db2;
 	}
 
+	void evalEpoch(const Dataset& trainData, int epoch) {
+		MlpMatrix full_output = forward(trainData.data);
+		double epoch_loss = 0.0;
+		for (int i = 0; i < trainData.labels.size(); ++i) {
+			// Avoid log(0) by adding a small epsilon if needed.
+			float prob = full_output(i, trainData.labels(i));
+			epoch_loss += std::log(prob);
+		}
+		epoch_loss = -epoch_loss / trainData.labels.size();
+		losses.push_back(epoch_loss);
+		std::cout << (epoch + 1) << "\t" << epoch_loss << std::endl;
+	}
+
 	void train(const Dataset& trainData, int epochs = 10, int batch_size = 128) {
+		std::cout << "Epoch\tLoss\n";
 		int num_samples = trainData.data.rows();
 		for (int epoch = 0; epoch < epochs; ++epoch) {
 			// Loop over mini-batches.
@@ -258,16 +280,7 @@ public:
 				// Backpropagate using this mini-batch.
 				backward(X_batch, y_batch, output);
 			}
-			MlpMatrix full_output = forward(trainData.data);
-			double epoch_loss = 0.0;
-			for (int i = 0; i < trainData.labels.size(); ++i) {
-				// Avoid log(0) by adding a small epsilon if needed.
-				float prob = full_output(i, trainData.labels(i));
-				epoch_loss += std::log(prob);
-			}
-			epoch_loss = -epoch_loss / trainData.labels.size();
-			losses.push_back(epoch_loss);
-			std::cout << "Epoch " << (epoch + 1) << ", Loss: " << epoch_loss << std::endl;
+			//evalEpoch(trainData, epoch);
 		}
 	}
 
@@ -301,16 +314,26 @@ public:
 	MlpMatrix a2;
 	std::vector<float> losses;
 
+	// temp matrices
+	MlpMatrix y_one_hot;
+	MlpMatrix dL_dz2;
+	MlpMatrix dL_dW2;
+	MlpMatrix dL_db2;
+	MlpMatrix dL_da1;
+	MlpMatrix dL_dz1;
+	MlpMatrix dL_dW1;
+	MlpMatrix dL_db1;
 };
 
 int main() {
+
 	Eigen::setNbThreads(32);
 	std::cout << "Eigen is using " << Eigen::nbThreads() << " threads.\n";
 
 	Dataset trainData = Dataset("assets.ignored/train-images.idx3-ubyte", "assets.ignored/train-labels.idx1-ubyte");
 	Dataset testData = Dataset("assets.ignored/t10k-images.idx3-ubyte", "assets.ignored/t10k-labels.idx1-ubyte");
-	testData.statistics();
-	trainData.statistics();
+	//testData.statistics();
+	//trainData.statistics();
 
 	size_t inputSize = trainData.numRows * trainData.numCols;
 	size_t hiddenSize = 128;
@@ -318,10 +341,16 @@ int main() {
 	size_t outputSize = *maxLabel + 1;
 	MLP mlp{ inputSize, hiddenSize, outputSize, 0.01f };
 
-	mlp.train(trainData, 50, 64);
+	Time begin = getTime();
+
+	mlp.train(trainData, 80, 64);
 	MlpVectori predictions = mlp.predict(testData.data);
 	double accuracy = (predictions.array() == testData.labels.array()).cast<double>().mean();
 	std::cout << "Test Accuracy: " << accuracy << std::endl;
+
+	Seconds elapsed = getTime() - begin;
+	std::cout << "benchmark: " << elapsed;
+
 
 	return 0;
 }

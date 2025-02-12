@@ -1,0 +1,11 @@
+no preallocation
+34.5927s
+38.1137s
+30.7015s
+30.1673s
+
+
+preallocation1:
+30.3248s
+30.3496s
+29.7984s
