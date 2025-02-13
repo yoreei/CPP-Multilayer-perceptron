@@ -185,9 +185,11 @@ struct Dataset {
 
 class MLP {
 public:
-	MLP(size_t inputSize, size_t hiddenSize, size_t outputSize, float lr) : lr(lr) {
+	/* arg m: mini-batch size */
+	MLP(size_t inputSize, size_t hiddenSize, size_t outputSize, int m, float lr) : m(m), lr(lr) {
 
 
+		// init architecture
 		srand(42);
 		// Initialize weight_1: values in [-1,1] scaled to [-0.01, 0.01]
 		weight_1 = MlpMatrix::Random(inputSize, hiddenSize) * 0.01;
@@ -200,6 +202,20 @@ public:
 
 		// Initialize bias_2: values in [0,1)
 		bias_2 = (MlpRowVectorf::Random(outputSize).array() + 1.f) / 2.f;
+
+		// init intermediate results
+		z1.resize(m, hiddenSize);
+		a1.resize(m, hiddenSize);
+		z2.resize(m, outputSize);
+		a2.resize(m, outputSize);
+		 
+		// init temps
+
+		dL_da1.resize(m, hiddenSize);
+		dL_dz1.resize(m, hiddenSize);
+		dL_dz2.resize(m, outputSize);
+		y_one_hot.resize(m, outputSize); // dl_da2
+
 
 		//std::cout << "weight_1 (first 5 rows):\n" << weight_1.topRows(5) << "\n\n";
 		//std::cout << "bias_1:\n" << bias_1 << "\n\n";
@@ -219,36 +235,33 @@ public:
 	}
 
 	void backward(const Eigen::Ref<const MlpMatrix>& X, const Eigen::Ref<const MlpVectori>& y, const MlpMatrix& output) {
-		int m = y.size();      // mini-batch size
-		int num_classes = output.cols();
-
-		// 1. One-hot encode the true labels.
-		// Create an m x num_classes matrix initialized to zeros.
-		y_one_hot = MlpMatrix::Zero(m, num_classes);
+		y_one_hot.setZero();              // Sets all entries to zero
 		for (int i = 0; i < m; ++i) {
-			// Set the column corresponding to the true label to 1.
 			y_one_hot(i, y(i)) = 1.0f;
 		}
 
 		// 2. Compute gradient at output layer:
-		dL_dz2 = output - y_one_hot;
+		dL_dz2.noalias() = output - y_one_hot;
 
 		// 3. Gradients for the second (output) layer:
 		dL_dW2 = (a1.transpose() * dL_dz2) / m;
+		weight_2 -= lr * dL_dW2;
+
 		dL_db2 = dL_dz2.colwise().sum() / m;
+		bias_2 -= lr * dL_db2;
 
 		// 4. Backpropagate to the hidden layer:
-		dL_da1 = dL_dz2 * weight_2.transpose();
-		dL_dz1 = dL_da1.array() * (z1.array() > 0).cast<float>();
+		dL_da1.noalias() = dL_dz2 * weight_2.transpose();
+
+		dL_dz1.noalias() = (dL_da1.array() * (z1.array() > 0).cast<float>()).matrix();
 
 		// 5. Gradients for the first (hidden) layer:
 		dL_dW1 = (X.transpose() * dL_dz1) / m;
-		dL_db1 = dL_dz1.colwise().sum() / m;
-
 		weight_1 -= lr * dL_dW1;
+
+		dL_db1 = dL_dz1.colwise().sum() / m;
 		bias_1 -= lr * dL_db1;
-		weight_2 -= lr * dL_dW2;
-		bias_2 -= lr * dL_db2;
+
 	}
 
 	void evalEpoch(const Dataset& trainData, int epoch) {
@@ -264,17 +277,16 @@ public:
 		std::cout << (epoch + 1) << "\t" << epoch_loss << std::endl;
 	}
 
-	void train(const Dataset& trainData, int epochs = 10, int batch_size = 128) {
+	void train(const Dataset& trainData, int epochs = 10) {
 		std::cout << "Epoch\tLoss\n";
 		int num_samples = trainData.data.rows();
+		int maxSamples = m * (num_samples / m);
 		for (int epoch = 0; epoch < epochs; ++epoch) {
 			// Loop over mini-batches.
-			for (int i = 0; i < num_samples; i += batch_size) {
-				// Determine the actual size of this batch (in case num_samples isn't divisible by batch_size).
-				int current_batch_size = std::min(batch_size, num_samples - i);
+			for (int i = 0; i < maxSamples; i += m) {
 				// Get a view of the current mini-batch without copying:
-				const auto X_batch = trainData.data.block(i, 0, current_batch_size, trainData.data.cols());
-				const auto y_batch = trainData.labels.segment(i, current_batch_size);
+				const auto X_batch = trainData.data.block(i, 0, m, trainData.data.cols());
+				const auto y_batch = trainData.labels.segment(i, m);
 				// Compute forward pass on the mini-batch.
 				const MlpMatrix& output = forward(X_batch);
 				// Backpropagate using this mini-batch.
@@ -302,6 +314,7 @@ public:
 	}
 
 	float lr;
+	int m; //< mini-batch size
 
 	MlpMatrix weight_1; //< dim [inputSize x hiddenSize]
 	MlpRowVectorf bias_1;   //< dim [1 x hiddenSize]
@@ -310,8 +323,8 @@ public:
 
 	MlpMatrix z1; //< dim [batchSize x hiddenSize]
 	MlpMatrix z2; //< dim [batchSize x outputSize]
-	MlpMatrix a1;
-	MlpMatrix a2;
+	MlpMatrix a1; //< dim [batchSize x hiddenSize]
+	MlpMatrix a2; //< dim [batchSize x outputSize]
 	std::vector<float> losses;
 
 	// temp matrices
@@ -339,11 +352,11 @@ int main() {
 	size_t hiddenSize = 128;
 	const auto [_, maxLabel] = std::minmax_element(trainData.labels.begin(), trainData.labels.end());
 	size_t outputSize = *maxLabel + 1;
-	MLP mlp{ inputSize, hiddenSize, outputSize, 0.01f };
+	MLP mlp{ inputSize, hiddenSize, outputSize, 60, 0.01f };
 
 	Time begin = getTime();
 
-	mlp.train(trainData, 80, 64);
+	mlp.train(trainData, 80);
 	MlpVectori predictions = mlp.predict(testData.data);
 	double accuracy = (predictions.array() == testData.labels.array()).cast<double>().mean();
 	std::cout << "Test Accuracy: " << accuracy << std::endl;
