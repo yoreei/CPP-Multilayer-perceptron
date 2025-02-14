@@ -16,11 +16,11 @@ Time getTime() {
 using Milli = std::chrono::duration<double, std::milli>;
 using Seconds = std::chrono::duration<double, std::ratio<1>>;
 
-using namespace Eigen;
-using MlpMatrix = MatrixXf;
-using MlpVectorf = VectorXf;
-using MlpVectori = VectorXi;
-using MlpRowVectorf = RowVectorXf;
+using real_t = double;
+using MlpMatrix = Eigen::Matrix<real_t, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>;
+using MlpVectorf = Eigen::Vector<real_t, Eigen::Dynamic>;
+using MlpVectori = Eigen::Vector<int, Eigen::Dynamic>;
+using MlpRowVectorf = Eigen::RowVector<real_t, Eigen::Dynamic>;
 
 // Helper function to swap endianess (if needed)
 uint32_t swapEndian(uint32_t val) {
@@ -58,7 +58,7 @@ struct Dataset {
 	Dataset() = default;
 
 	// Constructor that reads MNIST data and label files.
-	Dataset(const std::string& dataFile, const std::string& labelFile) {
+	Dataset(const std::string& dataFile, const std::string& labelFile, bool halveData = false) {
 		std::cout << "loading " << dataFile << std::endl;
 		std::ifstream dataIfstream(dataFile, std::ios::binary);
 		if (!dataIfstream) {
@@ -86,20 +86,30 @@ struct Dataset {
 		std::cout << "Columns: " << numCols << "\n";
 
 		// Allocate data matrix: each row will be one flattened image.
+		size_t actualRows = numRows; //< used for reading the file
+		size_t actualCols = numCols;
+		if (halveData) {
+			numRows /= 2;
+			numCols /= 2;
+		}
+
 		data.resize(numImages, numRows * numCols);
 
 		// Read image data (numImages * numRows*numCols bytes).
 		// We fill the matrix element‐by‐element.
 		for (size_t imgId = 0; imgId < numImages; ++imgId) {
-			for (size_t i = 0; i < numRows * numCols; ++i) {
+			for (size_t i = 0; i < actualRows * actualCols; ++i) {
 				char byte;
 				dataIfstream.read(&byte, sizeof(char));
 				if (!dataIfstream) {
 					std::cerr << "Error reading byte " << i << std::endl;
 					exit(-1);
 				}
+
+				if (i < numRows * numCols) {
+					data(imgId, i) = static_cast<unsigned char>(byte) / 255.0f;
+				}
 				// Normalize the pixel value to [0,1] and store as float.
-				data(imgId, i) = static_cast<unsigned char>(byte) / 255.0f;
 			}
 		}
 
@@ -208,7 +218,7 @@ public:
 		a1.resize(m, hiddenSize);
 		z2.resize(m, outputSize);
 		a2.resize(m, outputSize);
-		 
+
 		// init temps
 
 		dL_da1.resize(m, hiddenSize);
@@ -253,7 +263,7 @@ public:
 		// 4. Backpropagate to the hidden layer:
 		dL_da1.noalias() = dL_dz2 * weight_2.transpose();
 
-		dL_dz1.noalias() = (dL_da1.array() * (z1.array() > 0).cast<float>()).matrix();
+		dL_dz1.noalias() = (dL_da1.array() * (z1.array() > 0).cast<real_t>()).matrix();
 
 		// 5. Gradients for the first (hidden) layer:
 		dL_dW1 = (X.transpose() * dL_dz1) / m;
@@ -282,6 +292,8 @@ public:
 		int num_samples = trainData.data.rows();
 		int maxSamples = m * (num_samples / m);
 		for (int epoch = 0; epoch < epochs; ++epoch) {
+
+			Time begin = getTime();
 			// Loop over mini-batches.
 			for (int i = 0; i < maxSamples; i += m) {
 				// Get a view of the current mini-batch without copying:
@@ -292,6 +304,9 @@ public:
 				// Backpropagate using this mini-batch.
 				backward(X_batch, y_batch, output);
 			}
+			Seconds elapsed = getTime() - begin;
+			std::cout << "epoch time: " << elapsed << std::endl;
+
 			//evalEpoch(trainData, epoch);
 		}
 	}
@@ -339,14 +354,17 @@ public:
 };
 
 int main() {
-
+	bool HALVEDATA = false;
+	bool DEBUGSTATISTICS = false;
 	Eigen::setNbThreads(32);
 	std::cout << "Eigen is using " << Eigen::nbThreads() << " threads.\n";
 
-	Dataset trainData = Dataset("assets.ignored/train-images.idx3-ubyte", "assets.ignored/train-labels.idx1-ubyte");
-	Dataset testData = Dataset("assets.ignored/t10k-images.idx3-ubyte", "assets.ignored/t10k-labels.idx1-ubyte");
-	//testData.statistics();
-	//trainData.statistics();
+	Dataset trainData = Dataset("assets.ignored/train-images.idx3-ubyte", "assets.ignored/train-labels.idx1-ubyte", HALVEDATA);
+	Dataset testData = Dataset("assets.ignored/t10k-images.idx3-ubyte", "assets.ignored/t10k-labels.idx1-ubyte", HALVEDATA);
+	if (DEBUGSTATISTICS) {
+		testData.statistics();
+		trainData.statistics();
+	}
 
 	size_t inputSize = trainData.numRows * trainData.numCols;
 	size_t hiddenSize = 128;
@@ -356,7 +374,7 @@ int main() {
 
 	Time begin = getTime();
 
-	mlp.train(trainData, 80);
+	mlp.train(trainData, 8);
 	MlpVectori predictions = mlp.predict(testData.data);
 	double accuracy = (predictions.array() == testData.labels.array()).cast<double>().mean();
 	std::cout << "Test Accuracy: " << accuracy << std::endl;
