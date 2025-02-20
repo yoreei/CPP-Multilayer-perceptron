@@ -129,6 +129,12 @@ public:
 	const T32* data32() const {
 		return reinterpret_cast<const float*>(data256());
 	}
+	T32* end32() {
+		return data32() + size32();
+	}
+	const T32* end32() const {
+		return data32() + size32();
+	}
 	T32& at32(size_t i) {
 		return *(data32() + i);
 	}
@@ -561,39 +567,45 @@ public:
 			bias_1.data32(), // y
 			1);				 // incy
 
-		zzz see chatgpt
-
 	}
 
 	void evalEpoch(const Dataset& trainData, int epoch) {
 		forward(trainData.x, 0, trainData.x.rows);
-		double epoch_loss = 0.0;
-		for (int i = 0; i < trainData.labels.size(); ++i) {
-			// Avoid log(0) by adding a small epsilon if needed.
-			float prob = full_output(i, trainData.labels(i));
-			epoch_loss += std::log(prob);
+		__m256 epoch_loss = _mm256_setzero_ps();
+		size_t outSize = a2.cols;
+		const auto& y = trainData.y;
+		for (int i = 0; i < y.size32(); i += 8) {
+			__m256 probs = _mm256_set_ps(
+				a2.at32(i, y.at32(i)),
+				a2.at32(i, y.at32(i + 1)),
+				a2.at32(i, y.at32(i + 2)),
+				a2.at32(i, y.at32(i + 3)),
+				a2.at32(i, y.at32(i + 4)),
+				a2.at32(i, y.at32(i + 5)),
+				a2.at32(i, y.at32(i + 6)),
+				a2.at32(i, y.at32(i + 7)));
+			probs = _mm256_log_ps(probs);
+			epoch_loss = _mm256_add_ps(epoch_loss, probs);
 		}
-		epoch_loss = -epoch_loss / trainData.labels.size();
-		losses.push_back(epoch_loss);
-		std::cout << (epoch + 1) << "\t" << epoch_loss << std::endl;
+
+		float epoch_loss_sum = sum256f(epoch_loss);
+		epoch_loss_sum /= -y.size32();
+		losses.push_back(epoch_loss_sum);
+
+		std::cout << (epoch + 1) << "\t" << epoch_loss_sum << std::endl;
 	}
 
 	void train(const Dataset& trainData, int epochs = 10) {
 		std::cout << "Epoch\tLoss\n";
-		int num_samples = trainData.data.rows();
-		int maxSamples = m * (num_samples / m);
+		const auto& x = trainData.x;
+		const auto& y = trainData.y;
+		int maxSamples = m * (x.rows / m);
 		for (int epoch = 0; epoch < epochs; ++epoch) {
 
 			Time begin = getTime();
-			// Loop over mini-batches.
 			for (int i = 0; i < maxSamples; i += m) {
-				// Get a view of the current mini-batch without copying:
-				const auto X_batch = trainData.data.block(i, 0, m, trainData.data.cols());
-				const auto y_batch = trainData.labels.segment(i, m);
-				// Compute forward pass on the mini-batch.
-				const MlpMatrix& output = forward(X_batch);
-				// Backpropagate using this mini-batch.
-				backward(X_batch, y_batch, output);
+				forward(x, i, m);
+				backward(x, y, i, m);
 			}
 			Seconds elapsed = getTime() - begin;
 			std::cout << "epoch time: " << elapsed << std::endl;
@@ -602,18 +614,16 @@ public:
 		}
 	}
 
-	MlpVector<__m256i> predict(const MlpMatrix& X) {
-		// Compute the forward pass to get softmax probabilities.
-		const MlpMatrix& output = forward(X);
+	MlpVector<__m256i> predict(const MlpMatrix& test) {
+		forward(test, 0, test.rows);
 
-		// Prepare a vector to hold the predicted class for each row.
-		MlpVector<__m256i> predictions(output.rows());
-
-		// For each sample (row), find the index of the maximum probability.
-		for (int i = 0; i < output.rows(); ++i) {
-			int maxIndex;
-			output.row(i).maxCoeff(&maxIndex);
-			predictions(i) = maxIndex;
+		MlpVector<__m256i> predictions(test.rows / 8);
+		for (int i = 0; i < predictions.size32(); ++i) {
+			const real_t* start32 = a2.data32();
+			const real_t* end32 = start32 + a2.cols;
+			const auto maxIter = std::max_element(start32, end32);
+			size_t maxIndex = std::distance(start32, maxIter);
+			predictions.at32(i) = maxIndex;
 		}
 
 		return predictions;
@@ -657,16 +667,25 @@ int main() {
 
 	size_t inputSize = trainData.numRows * trainData.numCols;
 	size_t hiddenSize = 128;
-	const auto [_, maxLabel] = std::minmax_element(trainData.labels.begin(), trainData.labels.end());
+	const auto maxLabel = std::max_element(trainData.y.data32(), trainData.y.end32());
 	size_t outputSize = *maxLabel + 1;
 	MLP mlp{ inputSize, hiddenSize, outputSize, 60, 0.01f };
 
 	Time begin = getTime();
 
 	mlp.train(trainData, 8);
-	MlpVectori predictions = mlp.predict(testData.data);
-	double accuracy = (predictions.array() == testData.labels.array()).cast<double>().mean();
-	std::cout << "Test Accuracy: " << accuracy << std::endl;
+	MlpVector<__m256i> predictions = mlp.predict(testData.x);
+
+	//double accuracy = (predictions.array() == testData.labels.array()).cast<double>().mean();
+	__m256i acc = _mm256_setzero_si256();
+	for (int i = 0; i < predictions.size256(); ++i) {
+
+		__m256i mask = _mm256_cmpeq_epi32(predictions.at256(i), testData.y.at256(i));
+		__m256i ones = _mm256_srli_epi32(mask, 31); // >> 31 for each 32-bit element
+		acc = _mm256_add_epi32(acc, ones);
+	}
+
+	std::cout << "Test Accuracy: " << sum256i(acc) << std::endl;
 
 	Seconds elapsed = getTime() - begin;
 	std::cout << "benchmark: " << elapsed;
