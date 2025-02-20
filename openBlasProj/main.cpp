@@ -32,32 +32,36 @@ uint32_t swapEndian(uint32_t val) {
 
 using real_t = float;
 struct MlpMatrix {
+	MlpMatrix() = default;
 	MlpMatrix(int rows, int cols) : rows(rows), cols(cols) {
 
 		if ((rows * cols) % 8 != 0) {
 			throw std::runtime_error("wrong size");
 		}
-		data256.resize((rows * cols) % 8, _mm256_set1_ps(0.f));
-
+		data32.resize(rows * cols, 0.f);
 	}
 
 	//v dim(mask) = dim(*this)
 	void positive_mask(const MlpMatrix& mask) {
 		__m256 zeros = _mm256_setzero_ps();
 		for (size_t i = 0; i < size256(); ++i) {
-			__m256 mask8 = _mm256_cmp_ps(mask.data256[i], zeros, _CMP_GT_OS); // elem > 0 ? 1 : 0
-			data256[i] = _mm256_and_ps(data256[i], mask8); // mask == 1 ? elem = elem : elem = 0
+			__m256 mask8 = _mm256_cmp_ps(mask.at256(i), zeros, _CMP_GT_OS); // elem > 0 ? 1 : 0
+			at256(i) = _mm256_and_ps(at256(i), mask8); // mask == 1 ? elem = elem : elem = 0
 		}
 
 	}
 	void dup_rows(const MlpVector<__m256>& row) {
 		// O(log n) memcpy calls
 
-		size_t block_size = sizeof(row.at256(0)) * row.size256();
-		std::memcpy(data256.data(), row.data256(), block_size);
+		if (row.size32() != cols) {
+			throw std::runtime_error("wrong size");
+		}
+
+		size_t block_size = sizeof(row.at32(0)) * row.size32();
+		std::memcpy(data32.data(), row.data32(), block_size);
 
 		size_t copied = 1;
-		char* d = reinterpret_cast<char*>(data256.data());
+		char* d = reinterpret_cast<char*>(data32.data());
 
 		// double copy region every time
 		while (copied < rows) {
@@ -67,26 +71,38 @@ struct MlpMatrix {
 		}
 	}
 
-	size_t size32() {
+	size_t size32() const {
 		return rows * cols;
 	}
-	size_t size256() {
+	size_t size256() const {
 		return (rows * cols) / 8;
 	}
-
-	float* data32() {
-		return reinterpret_cast<float*>(data256.data());
+	__m256* data256() {
+		return reinterpret_cast<__m256*>(data32.data());
+	}
+	const __m256* data256() const {
+		return reinterpret_cast<const __m256*>(data32.data());
+	}
+	const __m256* end256() const {
+		return reinterpret_cast<const __m256*>(data32.data()) + size256();
 	}
 
-	const float* data32() const {
-		return reinterpret_cast<const float*>(data256.data());
+	__m256& at256(size_t i) {
+		return *(reinterpret_cast<__m256*>(data32.data()) + i);
+	}
+
+	const __m256& at256(size_t i) const {
+		return *(reinterpret_cast<const __m256*>(data32.data()) + i);
 	}
 
 	float& at32(size_t row, size_t col) {
-		return *(data32() + row * cols + col);
+		return data32[row * cols + col];
+	}
+	const float& at32(size_t row, size_t col) const {
+		return data32[row * cols + col];
 	}
 
-	std::vector<__m256> data256;
+	std::vector<float, AlignedAllocator<float, 32>> data32; // needs 32-byte alignment because we will be reading it as __m256
 	int rows;
 	int cols; // number of floats on x axis, i.e. __m256-width * 8
 
@@ -135,6 +151,10 @@ public:
 	const T32* end32() const {
 		return data32() + size32();
 	}
+
+	const T256* end256() const {
+		return reinterpret_cast<const T256>(end32());
+	}
 	T32& at32(size_t i) {
 		return *(data32() + i);
 	}
@@ -153,18 +173,18 @@ public:
 void relu(MlpMatrix& x) {
 	__m256 zero = _mm256_setzero_ps();
 	for (size_t i = 0; i < x.size256(); ++i) {
-		x.data256[i] = _mm256_max_ps(x.data256[i], zero);
+		x.at256(i) = _mm256_max_ps(x.at256(i), zero);
 	}
 }
 
 void softmax(MlpMatrix& x) {
 	for (int row = 0; row < x.rows; ++row) {
-		real_t* start32 = x.data32() + row * x.cols;
+		real_t* start32 = &x.at32(row, 0);
 		real_t* end32 = start32 + x.cols;
 		const real_t rowMax = (*std::max_element(start32, end32));
 		__m256 sub = _mm256_set1_ps(rowMax);
 
-		__m256* start256 = x.data256.data() + row * (x.cols / 8);
+		__m256* start256 = x.data256() + row * (x.cols / 8);
 		__m256 sum256 = _mm256_setzero_ps();
 
 		// subtract rowMax, compute exp, accumulate sum256
@@ -216,17 +236,15 @@ struct Dataset {
 		std::cout << "Rows: " << numRows << "\n";
 		std::cout << "Columns: " << numCols << "\n";
 
-		size_t size256 = (numCols * numRows);
-		if (size256 % 8 != 0) {
+		if ((numRows * numCols) % 8 != 0) {
 			throw std::runtime_error("numCol must be divisible by 8");
 		}
-		size256 /= 8;
-		x.data256.resize(numImages * size256);
+		x = MlpMatrix(numRows, numCols);
 
 		// Read image data (numImages * numRows*numCols bytes).
 		// We fill the matrix element‐by‐element.
 		for (size_t imgId = 0; imgId < numImages; ++imgId) {
-			for (size_t i = 0; i < size256; ++i) {
+			for (size_t i = 0; i < x.size256(); ++i) {
 				uint64_t bytes8;
 				dataIfstream.read(reinterpret_cast<char*>(&bytes8), sizeof(bytes8));
 				if (!dataIfstream) {
@@ -237,7 +255,8 @@ struct Dataset {
 
 				__m256 floats8 = cvt8epu8_8ps(bytes8);
 				floats8 = _mm256_div_ps(floats8, _mm256_set1_ps(255.f));
-				x.data256[imgId * size256 + i] = floats8;
+				x.at256(imgId * x.size256() + i) = floats8;
+				//zzz copy - assigning __m256 should not be possible;
 			}
 		}
 
@@ -296,10 +315,8 @@ struct Dataset {
 	// Print out statistics and show the 40th image.
 	void statistics() const {
 		std::cout << "Data dim [" << x.rows << ", " << x.cols << "]" << std::endl;
-		const real_t* start32 = x.data32();
-		const real_t* end32 = start32 + x.cols;
-		const auto [minVal, maxVal] = std::minmax_element(start32, end32);
-		float sumVal = std::accumulate(start32, end32, 0.f);
+		const auto [minVal, maxVal] = std::minmax_element(x.data32.cbegin(), x.data32.cend());
+		float sumVal = std::accumulate(x.data32.cbegin(), x.data32.cend(), 0.f);
 		std::cout << "Data: min = " << *minVal << ", max = " << *maxVal << ", sum = " << sumVal << std::endl;
 
 		std::cout << "Printing 40th image:" << std::endl;
@@ -314,7 +331,7 @@ struct Dataset {
 
 	// Access a pixel value from the flattened image.
 	const float& getPixel(uint64_t imgId, uint64_t yPos, uint64_t xPos) const {
-		return *(x.data32() + imgId * x.rows * x.cols + yPos * x.cols + xPos);
+		return x.data32[imgId * x.rows * x.cols + yPos * x.cols + xPos];
 	}
 
 	uint32_t numRows = 0, numCols = 0; //< must be unit32_t to read from file properly!!!
@@ -330,19 +347,19 @@ public:
 		// Initialize weight_1: values in [-1,1] scaled to [-0.01, 0.01]
 
 		weight_1 = MlpMatrix(inputSize, hiddenSize);
-		seqRan256(weight_1.data256, -0.01f, 0.01f);
+		seqRan256(weight_1.data256(), weight_1.end256(), -0.01f, 0.01f);
 
 		// Initialize bias_1: values in [0,1)
 		bias_1 = MlpVector<__m256>(hiddenSize);
-		seqRan256(bias_1, 0.f, 1.f);
+		seqRan256(bias_1.data256(), bias_1.end256(), 0.f, 1.f);
 
 		// Initialize weight_2: values in [-0.01, 0.01]
 		weight_2 = MlpMatrix(hiddenSize, outputSize);
-		seqRan256(weight_2.data256, -0.01, 0.01);
+		seqRan256(weight_2.data256(), weight_2.end256(), - 0.01f, 0.01f);
 
 		// Initialize bias_2: values in [0,1)
 		bias_2 = MlpVector<__m256>(outputSize);
-		seqRan256(bias_2, 0.f, 1.f);
+		seqRan256(bias_2.data256(), bias_2.end256(), 0.f, 1.f);
 
 		z1 = MlpMatrix(m, hiddenSize);
 		a1 = MlpMatrix(m, hiddenSize);
@@ -370,7 +387,7 @@ public:
 	batchRows: this batch ends at endRow = startRow + batchSize
 	*/
 	void forward(const MlpMatrix& input, int startRow, int batchRows) {
-		const float* A = input.data32() + startRow * input.cols;
+		const float* A = &input.at32(startRow, 0);
 		size_t ACols = input.cols;
 
 		//z1 = (batch * weight_1) +(rowWise) bias_1;
@@ -384,10 +401,10 @@ public:
 			1.0f,             // alpha
 			A,
 			ACols,	          // lda, leading dimension of A (num col in A)
-			weight_1.data32(),// B
+			weight_1.data32.data(),// B
 			weight_1.cols,    // ldb, leading dimension of B (num col in B)
 			0.0f,             // beta
-			z1.data32(),	  // C (OUT, result)
+			z1.data32.data(),	  // C (OUT, result)
 			weight_1.cols);   // ldc, leading dimension of C (num col in C)
 
 		a1 = z1;
@@ -402,12 +419,12 @@ public:
 			weight_2.cols,    // N (B.cols == C.cols)
 			a1.cols,	      // K (A.cols == B.rows)
 			1.0f,             // alpha
-			a1.data32(),   // A
+			a1.data32.data(),   // A
 			a1.cols,          // lda (num col in A)
-			weight_2.data32(), // B
+			weight_2.data32.data(), // B
 			weight_2.cols,    // ldb (num col in B)
 			0.0f,             // beta
-			z2.data32(),   // C (OUT, result)
+			z2.data32.data(),   // C (OUT, result)
 			weight_2.cols);   // ldc (num col in C)
 
 		a2 = z2;
@@ -433,9 +450,9 @@ public:
 		cblas_saxpy(     // y = y + alpha * x
 			a2.size32(), //n
 			-1.0f,		 //alpha
-			y_one_hot.data32(), //x
+			y_one_hot.data32.data(), //x
 			1,			//incx
-			dL_dz2.data32(),    //y
+			dL_dz2.data32.data(),    //y
 			1			//incy
 		);
 
@@ -448,21 +465,21 @@ public:
 			dL_dz2.cols,      // N (B.cols == C.cols)
 			a1.rows,	      // K (A^T.cols == B.rows)
 			1.f / batchRows,          // alpha
-			a1.data32(),      // A
+			a1.data32.data(),      // A
 			a1.rows,          // lda (num col in A^T)
-			dL_dz2.data32(),  // B
+			dL_dz2.data32.data(),  // B
 			dL_dz2.cols,      // ldb (num col in B)
 			0.0f,             // beta
-			dL_dW2.data32(),  // C (OUT, result)
+			dL_dW2.data32.data(),  // C (OUT, result)
 			dL_dz2.cols);     // ldc (num col in C)
 
 		//weight_2 -= lr * dL_dW2;
 		cblas_saxpy( // y = y + alpha * x
 			dL_dW2.size32(), // x.size
 			-lr,			 // alpha
-			dL_dW2.data32(), // x
+			dL_dW2.data32.data(), // x
 			1,				 // incx
-			weight_2.data32(), // y
+			weight_2.data32.data(), // y
 			1);				 // incy
 
 		//dL_db2 = dL_dz2.colwise().sum() / m;
@@ -472,19 +489,19 @@ public:
 			dL_dz2.cols,	// M (rows in A^T)
 			dL_dz2.rows,	// N (cols in A^T)
 			1.0f / batchRows,		// α
-			dL_dz2.data32(),// A
+			dL_dz2.data32.data(),// A
 			dL_dz2.rows,	// lda: A^T row stride
 			ones.data(),	// x
 			1,              // incx
 			0.0f,			// beta
-			dL_db2.data32(),// y
+			dL_db2.data32.data(),// y
 			1);				// incy
 
 		//bias_2 -= lr * dL_db2;
 		cblas_saxpy(		 // y = y + alpha * x
 			dL_db2.size32(), // x.size
 			-lr,			 // alpha
-			dL_db2.data32(), // x
+			dL_db2.data32.data(), // x
 			1,				 // incx
 			bias_2.data32(), // y
 			1);				 // incy
@@ -500,12 +517,12 @@ public:
 			B.rows,		// N (B^T.cols == C.cols)
 			A.cols,			// K (A.cols == B.rows)
 			1.f,			// alpha
-			A.data32(),		// A
+			A.data32.data(),		// A
 			A.cols,			// lda (num col in A)
-			B.data32(),	// B
+			B.data32.data(),	// B
 			B.rows,		// ldb (num col in B^T)
 			0.0f,				// beta
-			dL_da1.data32(),	// C (OUT, result)
+			dL_da1.data32.data(),	// C (OUT, result)
 			B.rows);		// ldc (num col in C)
 
 
@@ -515,7 +532,7 @@ public:
 
 		// 5. Gradients for the first (hidden) layer:
 		//dL_dW1 = (X.transpose() * dL_dz1) / m;
-		const float* batch32 = input.data32() + startRow * input.cols;
+		const float* batch32 = &input.at32(startRow, 0);
 		cblas_sgemm(CblasRowMajor,  // C = alpha*A*B + beta*C
 			CblasTrans,       // A: transpose
 			CblasNoTrans,     // B: no transpose
@@ -525,10 +542,10 @@ public:
 			1.f / batchRows,          // alpha
 			batch32,	      // A
 			batchRows,        // lda (num col in A^T)
-			dL_dz1.data32(),  // B
+			dL_dz1.data32.data(),  // B
 			dL_dz1.cols,      // ldb (num col in B)
 			0.0f,             // beta
-			dL_dW1.data32(),  // C (OUT, result)
+			dL_dW1.data32.data(),  // C (OUT, result)
 			dL_dz1.cols);     // ldc (num col in C)
 
 
@@ -536,9 +553,9 @@ public:
 		cblas_saxpy( // y = y + alpha * x
 			dL_dW1.size32(), // x.size
 			-lr,			 // alpha
-			dL_dW1.data32(), // x
+			dL_dW1.data32.data(), // x
 			1,				 // incx
-			weight_1.data32(), // y
+			weight_1.data32.data(), // y
 			1);				 // incy
 
 
@@ -549,12 +566,12 @@ public:
 			dL_dz1.cols,	// M (rows in A^T)
 			dL_dz1.rows,	// N (cols in A^T)
 			1.0f / batchRows,		// α
-			dL_dz1.data32(),// A
+			dL_dz1.data32.data(),// A
 			dL_dz1.rows,	// lda: A^T row stride
 			ones.data(),	// x
 			1,              // incx
 			0.0f,			// beta
-			dL_db1.data32(),// y
+			dL_db1.data32.data(),// y
 			1);				// incy
 
 
@@ -562,7 +579,7 @@ public:
 		cblas_saxpy(		 // y = y + alpha * x
 			dL_db1.size32(), // x.size
 			-lr,			 // alpha
-			dL_db1.data32(), // x
+			dL_db1.data32.data(), // x
 			1,				 // incx
 			bias_1.data32(), // y
 			1);				 // incy
@@ -619,7 +636,7 @@ public:
 
 		MlpVector<__m256i> predictions(test.rows / 8);
 		for (int i = 0; i < predictions.size32(); ++i) {
-			const real_t* start32 = a2.data32();
+			const real_t* start32 = a2.data32.data();
 			const real_t* end32 = start32 + a2.cols;
 			const auto maxIter = std::max_element(start32, end32);
 			size_t maxIndex = std::distance(start32, maxIter);
