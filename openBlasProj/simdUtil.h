@@ -2,7 +2,42 @@
 #include "immintrin.h"
 #include <random>
 #include <ranges>
+#include <cstdlib>
+#include <stdexcept>
+#include <xmmintrin.h>
 
+/* Needed to allocate heap containers with alignment, e.g. for the __m256 type */
+template <typename T, std::size_t Alignment>
+struct AlignedAllocator {
+    using value_type = T;
+
+    AlignedAllocator() noexcept {}
+
+    template <typename U>
+    AlignedAllocator(const AlignedAllocator<U, Alignment>&) noexcept {}
+
+    T* allocate(std::size_t n) {
+        void* ptr = _mm_malloc(n * sizeof(T), Alignment);
+        if (!ptr) {
+            throw std::bad_alloc();
+        }
+        return static_cast<T*>(ptr);
+    }
+
+    void deallocate(T* p, std::size_t) noexcept {
+        _mm_free(p);
+    }
+};
+
+template <typename T, typename U, std::size_t Alignment>
+bool operator==(const AlignedAllocator<T, Alignment>&, const AlignedAllocator<U, Alignment>&) {
+    return true;
+}
+
+template <typename T, typename U, std::size_t Alignment>
+bool operator!=(const AlignedAllocator<T, Alignment>& a, const AlignedAllocator<U, Alignment>& b) {
+    return !(a == b);
+}
 
 inline float sum256f(__m256 vec) {
     __m128 lo = _mm256_castps256_ps128(vec);
@@ -59,9 +94,9 @@ __m256 rand256ps(float rMin = 0.f, float rMax = 1.f) {
     return _mm256_load_ps(randomFloats.data());
 }
 
-template <std::ranges::range Range>
-void seqRan256(Range& seq, float rMin = 0.f, float rMax = 1.f) {
-    for (auto& e : seq) {
-        e = rand256ps(rMin, rMax);
+void seqRan256(__m256* begin, const __m256* end, float rMin = 0.f, float rMax = 1.f) {
+    while (begin != end) {
+        *begin = rand256ps(rMin, rMax);
+        ++begin;
     }
 }
