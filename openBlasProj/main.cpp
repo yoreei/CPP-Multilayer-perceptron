@@ -39,10 +39,12 @@ class MlpVector : private std::vector<T256> {
         "T256 must be either __m256 or __m256i");
 
 public:
+    int gemmRows;
+    int gemmOffset = 0;
     using T32 = std::conditional_t<std::is_same_v<T256, __m256i>, int, float>;
 
     MlpVector() = default;
-    MlpVector(size_t size, T32 val = 0) : std::vector<T256>(pad8(size) / 8, Set1(val)) {}
+    MlpVector(size_t size, T32 val = 0) : std::vector<T256>(pad8(size) / 8, Set1(val)), gemmRows(size) {}
     //using std::vector<T256>::vector;
     using std::vector<T256>::clear;
     using std::vector<T256>::resize;
@@ -55,6 +57,10 @@ public:
     using std::vector<T256>::cend;
     using std::vector<T256>::rend;
     using std::vector<T256>::crend;
+    void setGemmView(int _gemmRows, int _gemmOffset) {
+        gemmRows = _gemmRows;
+        gemmOffset = _gemmOffset;
+    }
     size_t size256() const {
         return std::vector<T256>::size();
     }
@@ -118,20 +124,28 @@ enum MlpTransMask {
 using real_t = float;
 struct MlpMatrix {
     MlpMatrix() = default;
-    MlpMatrix(int _rows, int _cols) {
+    MlpMatrix(int _rows, int _cols, float val = 0.f) {
         gemmOffset = 0;
         rows = pad8(_rows);
         gemmRows = rows;
         cols = pad8(_cols);
-        data256.resize((rows * cols) / 8, _mm256_set1_ps(0.f));
-        size_t DEBUGcapacity = data256.capacity();
-        std::cout << "DEBUGcapacity: " << DEBUGcapacity << std::endl;
+        data256.resize((rows * cols) / 8, _mm256_set1_ps(val));
     }
     void setGemmView(int _gemmOffset, int _gemmRows) {
         gemmOffset = _gemmOffset;
         gemmRows = _gemmRows;
         if (gemmOffset + gemmRows >= rows) {
             std::runtime_error("wrong offsets");
+        }
+    }
+
+    void one_hot(const MlpVector<__m256i>& vec) {
+        for (auto& e : data256) {
+            e = _mm256_setzero_ps();
+        }
+        for (size_t i = 0; i < vec.gemmRows; ++i) {
+            int label = vec.at32(vec.gemmOffset + i);
+            at32(i, label) = 1.0f;
         }
     }
 
@@ -269,7 +283,6 @@ struct MlpMatrix {
     int cols; // number of floats on x axis, i.e. __m256-width * 8
     int gemmOffset = 0; // used only in gemm ops
     int gemmRows;   // used only in gemm ops
-
 };
 
 void relu(MlpMatrix& x) {
@@ -483,45 +496,18 @@ public:
     startRow: this batch begins at startRow
     batchRows: this batch ends at endRow = startRow + batchSize
     */
-    void forward(const MlpMatrix& input) {
+    void forward(const MlpMatrix& batch) {
 
         //z1 = (batch * weight_1) +(rowWise) bias_1;
         z1.dup_rows(bias_1);
-        .gemm()
-        cblas_sgemm(CblasRowMajor,
-            CblasNoTrans,     // A: no transpose
-            CblasNoTrans,     // B: no transpose
-            batchRows,		  // M (A.rows == C.rows)
-            weight_1.cols,    // N (B.cols == C.cols)
-            ACols,			  // K (A.cols == B.rows)
-            1.0f,             // alpha
-            A,
-            ACols,	          // lda, leading dimension of A (num col in A)
-            weight_1.data32(),// B
-            weight_1.cols,    // ldb, leading dimension of B (num col in B)
-            0.0f,             // beta
-            z1.data32(),	  // C (OUT, result)
-            weight_1.cols);   // ldc, leading dimension of C (num col in C)
+        z1.gemm(batch, weight_1);
 
         a1 = z1;
         relu(a1);
 
         //z2 = (a1 * weight_2) +(rowWise) bias_2;
         z2.dup_rows(bias_2);
-        cblas_sgemm(CblasRowMajor,
-            CblasNoTrans,     // A: no transpose
-            CblasNoTrans,     // B: no transpose
-            a1.rows,          // M (A.rows == C.rows)
-            weight_2.cols,    // N (B.cols == C.cols)
-            a1.cols,	      // K (A.cols == B.rows)
-            1.0f,             // alpha
-            a1.data32(),   // A
-            a1.cols,          // lda (num col in A)
-            weight_2.data32(), // B
-            weight_2.cols,    // ldb (num col in B)
-            0.0f,             // beta
-            z2.data32(),   // C (OUT, result)
-            weight_2.cols);   // ldc (num col in C)
+        z2.gemm(a1, weight_2);
 
         a2 = z2;
         softmax(a2);
@@ -533,12 +519,8 @@ public:
     startRow: this batch begins at startRow
     batchRows: this batch ends at endRow = startRow + batchSize
     */
-    void backward(const MlpMatrix& input, const MlpVector<__m256i>& y, size_t startRow, size_t batchRows) {
-        y_one_hot = MlpMatrix(y_one_hot.rows, y_one_hot.cols); // fill with 0
-        for (size_t i = 0; i < batchRows; ++i) {
-            int label = y.at32(startRow + i);
-            y_one_hot.at32(i, label) = 1.0f;
-        }
+    void backward(const MlpMatrix& batchX, const MlpVector<__m256i>& batchY) {
+        y_one_hot.one_hot(batchY);
 
         // 2. Compute gradient at output layer:
         //dL_dz2.noalias() = a2 - y_one_hot;
@@ -552,22 +534,10 @@ public:
             1			//incy
         );
 
+        float divM = 1.f / batchX.gemmRows;
         // 3. Gradients for the second (output) layer:
         //dL_dW2 = (a1.transpose() * dL_dz2) / m;
-        cblas_sgemm(CblasRowMajor,  // C = alpha*A*B + beta*C
-            CblasTrans,       // A: transpose
-            CblasNoTrans,     // B: no transpose
-            a1.cols,          // M (A^T.rows == C.rows)
-            dL_dz2.cols,      // N (B.cols == C.cols)
-            a1.rows,	      // K (A^T.cols == B.rows)
-            1.f / batchRows,          // alpha
-            a1.data32(),      // A
-            a1.rows,          // lda (num col in A^T)
-            dL_dz2.data32(),  // B
-            dL_dz2.cols,      // ldb (num col in B)
-            0.0f,             // beta
-            dL_dW2.data32(),  // C (OUT, result)
-            dL_dz2.cols);     // ldc (num col in C)
+        dL_dW2.gemm<MlpATrans>(a1, dL_dz2, divM);
 
         //weight_2 -= lr * dL_dW2;
         cblas_saxpy( // y = y + alpha * x
@@ -579,19 +549,8 @@ public:
             1);				 // incy
 
         //dL_db2 = dL_dz2.colwise().sum() / m;
-        std::vector<float> ones(dL_dz2.rows, 1.f);
-        cblas_sgemv(CblasRowMajor, // y = αA ∗ x + βy
-            CblasTrans,		// transpose: A
-            dL_dz2.cols,	// M (rows in A^T)
-            dL_dz2.rows,	// N (cols in A^T)
-            1.0f / batchRows,		// α
-            dL_dz2.data32(),// A
-            dL_dz2.rows,	// lda: A^T row stride
-            ones.data(),	// x
-            1,              // incx
-            0.0f,			// beta
-            dL_db2.data32(),// y
-            1);				// incy
+        MlpMatrix ones(dL_dz2.rows, 1, 1.f);
+        dL_db2.gemm<MlpATrans>(dL_dz2, ones, divM); // gemv could be faster
 
         //bias_2 -= lr * dL_db2;
         cblas_saxpy(		 // y = y + alpha * x
@@ -603,47 +562,16 @@ public:
             1);				 // incy
 
         // 4. Backpropagate to the hidden layer:
-        //dL_da1.noalias() = dL_dz2 * weight_2.transpose();
-        const auto& A = dL_dz2;
-        const auto& B = weight_2;
-        cblas_sgemm(CblasRowMajor,  // C = alpha*A*B + beta*C
-            CblasNoTrans,       // A: no transpose
-            CblasTrans,			// B: transpose
-            A.rows,		// M (A.rows == C.rows)
-            B.rows,		// N (B^T.cols == C.cols)
-            A.cols,			// K (A.cols == B.rows)
-            1.f,			// alpha
-            A.data32(),		// A
-            A.cols,			// lda (num col in A)
-            B.data32(),	// B
-            B.rows,		// ldb (num col in B^T)
-            0.0f,				// beta
-            dL_da1.data32(),	// C (OUT, result)
-            B.rows);		// ldc (num col in C)
+        //dL_da1 = dL_dz2 * weight_2.transpose();
+        dL_da1.gemm<MlpBTrans>(dL_dz2, weight_2);
 
-
-        //dL_dz1.noalias() = (dL_da1.array() * (z1.array() > 0).cast<real_t>()).matrix();
+        //dL_dz1 = (dL_da1.array() * (z1.array() > 0).cast<real_t>()).matrix();
         dL_dz1 = dL_da1;
         dL_dz1.positive_mask(z1);
 
         // 5. Gradients for the first (hidden) layer:
         //dL_dW1 = (X.transpose() * dL_dz1) / m;
-        const float* batch32 = &input.at32(startRow, 0);
-        cblas_sgemm(CblasRowMajor,  // C = alpha*A*B + beta*C
-            CblasTrans,       // A: transpose
-            CblasNoTrans,     // B: no transpose
-            input.cols,       // M (A^T.rows == C.rows)
-            dL_dz1.cols,      // N (B.cols == C.cols)
-            batchRows,	      // K (A^T.cols == B.rows)
-            1.f / batchRows,          // alpha
-            batch32,	      // A
-            batchRows,        // lda (num col in A^T)
-            dL_dz1.data32(),  // B
-            dL_dz1.cols,      // ldb (num col in B)
-            0.0f,             // beta
-            dL_dW1.data32(),  // C (OUT, result)
-            dL_dz1.cols);     // ldc (num col in C)
-
+        dL_dW1.gemm<MlpATrans>(batchX, dL_dz1, divM);
 
         //weight_1 -= lr * dL_dW1;
         cblas_saxpy( // y = y + alpha * x
@@ -656,20 +584,8 @@ public:
 
 
         //dL_db1 = dL_dz1.colwise().sum() / m;
-        ones.resize(dL_dz1.rows, 1.f);
-        cblas_sgemv(CblasRowMajor, // y = αA ∗ x + βy
-            CblasTrans,		// transpose: A
-            dL_dz1.cols,	// M (rows in A^T)
-            dL_dz1.rows,	// N (cols in A^T)
-            1.0f / batchRows,		// α
-            dL_dz1.data32(),// A
-            dL_dz1.rows,	// lda: A^T row stride
-            ones.data(),	// x
-            1,              // incx
-            0.0f,			// beta
-            dL_db1.data32(),// y
-            1);				// incy
-
+        ones = MlpMatrix(dL_dz1.rows, 1, 1.f);
+        dL_db1.gemm<MlpATrans>(dL_dz1, ones, divM); // gemv could be faster
 
         //bias_1 -= lr * dL_db1;
         cblas_saxpy(		 // y = y + alpha * x
@@ -682,8 +598,9 @@ public:
 
     }
 
-    void evalEpoch(const Dataset& trainData, int epoch) {
-        forward(trainData.x, 0, trainData.x.rows);
+    void evalEpoch(Dataset& trainData, int epoch) {
+        //trainData.x.setGemmView(0, trainData.x.rows); // if we want to eval on whole data
+        forward(trainData.x);
         __m256 epoch_loss = _mm256_setzero_ps();
         size_t outSize = a2.cols;
         const auto& y = trainData.y;
@@ -720,7 +637,7 @@ public:
                 x.setGemmView(i, m);
                 y.setGemmView(i, m);
                 forward(x);
-                backward(x, y, i, m);
+                backward(x, y);
             }
             Seconds elapsed = getTime() - begin;
             std::cout << "epoch time: " << elapsed << std::endl;
@@ -730,7 +647,7 @@ public:
     }
 
     MlpVector<__m256i> predict(const MlpMatrix& test) {
-        forward(test, 0, test.rows);
+        forward(test);
 
         MlpVector<__m256i> predictions(test.rows / 8);
         for (int i = 0; i < predictions.size32(); ++i) {
