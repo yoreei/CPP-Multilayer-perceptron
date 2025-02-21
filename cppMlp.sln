@@ -9,6 +9,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "openBlasProj", "openBlasPro
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "cuBlasProj", "cuBlasProj\cuBlasProj.vcxproj", "{3139A00C-946A-4CBD-A64A-62A596A02937}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "scratchpadproject", "D:\prog-scratchpad\scratchpadproject\scratchpadproject.vcxproj", "{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -41,6 +43,14 @@ Global
 		{3139A00C-946A-4CBD-A64A-62A596A02937}.Release|x64.Build.0 = Release|x64
 		{3139A00C-946A-4CBD-A64A-62A596A02937}.Release|x86.ActiveCfg = Release|x64
 		{3139A00C-946A-4CBD-A64A-62A596A02937}.Release|x86.Build.0 = Release|x64
+		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Debug|x64.ActiveCfg = Debug|x64
+		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Debug|x64.Build.0 = Debug|x64
+		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Debug|x86.ActiveCfg = Debug|x64
+		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Debug|x86.Build.0 = Debug|x64
+		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Release|x64.ActiveCfg = Release|x64
+		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Release|x64.Build.0 = Release|x64
+		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Release|x86.ActiveCfg = Release|x64
+		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Release|x86.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
