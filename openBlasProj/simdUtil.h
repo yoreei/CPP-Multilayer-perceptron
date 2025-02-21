@@ -2,42 +2,8 @@
 #include "immintrin.h"
 #include <random>
 #include <ranges>
-#include <cstdlib>
 #include <stdexcept>
-#include <xmmintrin.h>
 
-/* Needed to allocate heap containers with alignment, e.g. for the __m256 type */
-template <typename T, std::size_t Alignment>
-struct AlignedAllocator {
-    using value_type = T;
-
-    AlignedAllocator() noexcept {}
-
-    template <typename U>
-    AlignedAllocator(const AlignedAllocator<U, Alignment>&) noexcept {}
-
-    T* allocate(std::size_t n) {
-        void* ptr = _mm_malloc(n * sizeof(T), Alignment);
-        if (!ptr) {
-            throw std::bad_alloc();
-        }
-        return static_cast<T*>(ptr);
-    }
-
-    void deallocate(T* p, std::size_t) noexcept {
-        _mm_free(p);
-    }
-};
-
-template <typename T, typename U, std::size_t Alignment>
-bool operator==(const AlignedAllocator<T, Alignment>&, const AlignedAllocator<U, Alignment>&) {
-    return true;
-}
-
-template <typename T, typename U, std::size_t Alignment>
-bool operator!=(const AlignedAllocator<T, Alignment>& a, const AlignedAllocator<U, Alignment>& b) {
-    return !(a == b);
-}
 
 inline float sum256f(__m256 vec) {
     __m128 lo = _mm256_castps256_ps128(vec);
@@ -61,6 +27,10 @@ inline int sum256i(__m256i vec) {
 
     // get first element:
     return _mm_cvtsi128_si32(sum128);
+}
+
+size_t pad8(size_t num) {
+    return (num % 8 == 0) ? num : ((num + 7) / 8) * 8;
 }
 
 
