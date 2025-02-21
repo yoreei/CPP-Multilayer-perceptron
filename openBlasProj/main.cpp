@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <immintrin.h>
+#include <cassert>
 
 #define SLEEF_STATIC_LIBS
 #include "sleef/sleef.h"
@@ -149,16 +150,16 @@ struct MlpMatrix {
         }
         for (size_t i = 0; i < vec.gemmRows; ++i) {
             int label = vec.at32(vec.gemmOffset + i);
-            at32(i, label) = 1.0f;
+            *data32(i, label) = 1.0f;
         }
     }
 
     // C = αA ∗ B ∗ +βC
     template <MlpTransMask transMask = MlpNoneTrans>
     void gemm(const MlpMatrix& aMatrix, const MlpMatrix& bMatrix, float alpha = 1.f, float beta = 0.f) {
-        float* C = data32();
-        const float* A = aMatrix.data32();
-        const float* B = bMatrix.data32();
+        float* C = data32(gemmOffset);
+        const float* A = aMatrix.data32(aMatrix.gemmOffset);
+        const float* B = bMatrix.data32(bMatrix.gemmOffset);
         int M, N, K;
         int lda, ldb; // pointers to help M/N swapping
         CBLAS_TRANSPOSE aTransOpt;
@@ -213,11 +214,6 @@ struct MlpMatrix {
         }
         else {
             static_assert(false, "wrong mask");
-        }
-
-        // handle gemv scenario:
-        if (N == 1) {
-            std::swap(M, N);
         }
 
         if (M != rows || N != cols) {
@@ -278,23 +274,19 @@ struct MlpMatrix {
     size_t size256() const {
         return (rows * cols) / 8;
     }
-    float* data32() {
-        return reinterpret_cast<float*>(data256.data());
+    float* data32(size_t row = 0, size_t col = 0) {
+        assert(row < rows && col < cols);
+        return reinterpret_cast<float*>(data256.data()) + row * cols + col;
     }
-    const float* data32() const {
-        return reinterpret_cast<const float*>(data256.data());
+    const float* data32(size_t row = 0, size_t col = 0) const {
+        assert(row < rows && col < cols);
+        return reinterpret_cast<const float*>(data256.data()) + row * cols + col;
     }
     const float* end32() const {
         return reinterpret_cast<const float*>(data256.data() + size256());
     }
     const __m256* end256() const {
         return data256.data() + size256();
-    }
-    float& at32(size_t row, size_t col) {
-        return *(reinterpret_cast<float*>(data256.data()) + row * cols + col);
-    }
-    const float& at32(size_t row, size_t col) const {
-        return *(reinterpret_cast<const float*>(data256.data()) + row * cols + col);
     }
 
     std::vector<__m256> data256; // needs 32-byte alignment because we will be reading it as __m256
@@ -313,7 +305,7 @@ void relu(MlpMatrix& x) {
 
 void softmax(MlpMatrix& x) {
     for (int row = 0; row < x.rows; ++row) {
-        real_t* start32 = &x.at32(row, 0);
+        real_t* start32 = x.data32(row);
         real_t* end32 = start32 + x.cols;
         const real_t rowMax = (*std::max_element(start32, end32));
         __m256 sub = _mm256_set1_ps(rowMax);
@@ -322,7 +314,9 @@ void softmax(MlpMatrix& x) {
         __m256 sum256 = _mm256_setzero_ps();
 
         // subtract rowMax, compute exp, accumulate sum256
-        for (size_t i = 0; i <= x.cols; ++i) {
+        assert(x.cols % 8 == 0);
+        for (size_t i = 0; i < x.cols / 8; ++i) {
+            assert(start256 + i < x.end256());
             start256[i] = _mm256_sub_ps(start256[i], sub);
             start256[i] = Sleef_expf8_u10avx2(start256[i]);
             sum256 = _mm256_add_ps(sum256, start256[i]);
@@ -331,7 +325,8 @@ void softmax(MlpMatrix& x) {
         __m256 rowSum256 = _mm256_set1_ps(rowSum);
 
         // divide exponential by rowSum
-        for (size_t i = 0; i <= x.cols; ++i) {
+        for (size_t i = 0; i < x.cols / 8; ++i) {
+            assert(start256 + i < x.end256());
             start256[i] = _mm256_div_ps(start256[i], rowSum256);
         }
 
@@ -491,16 +486,8 @@ public:
         bias_2 = MlpVector<__m256>(outputSize);
         seqRan256(bias_2.data256(), bias_2.end256(), 0.f, 1.f);
 
-        z1 = MlpMatrix(m, hiddenSize);
-        a1 = MlpMatrix(m, hiddenSize);
-        z2 = MlpMatrix(m, outputSize);
-        a2 = MlpMatrix(m, outputSize);
+        setBatchSize(m);
 
-        // init temps
-
-        dL_da1 = MlpMatrix(m, hiddenSize);
-        dL_dz1 = MlpMatrix(m, hiddenSize);
-        dL_dz2 = MlpMatrix(m, outputSize);
         dL_dW2 = MlpMatrix(hiddenSize, outputSize);
         dL_db2 = MlpMatrix(1 ,outputSize);
         dL_dW1 = MlpMatrix(inputSize, hiddenSize);
@@ -514,6 +501,20 @@ public:
         //std::cout << "reluWeight_2:\n" << relu(weight_2.topRows(5)) << "\n\n";
         //std::cout << "bias_2:\n" << bias_2 << "\n";
 
+    }
+
+    void setBatchSize(int m) {
+        const int& hiddenSize = bias_1.size32();
+        const int& outputSize = bias_2.size32();
+        z1 = MlpMatrix(m, hiddenSize);
+        a1 = MlpMatrix(m, hiddenSize);
+        z2 = MlpMatrix(m, outputSize);
+
+        dL_da1 = MlpMatrix(m, hiddenSize);
+        dL_dz1 = MlpMatrix(m, hiddenSize);
+        dL_dz2 = MlpMatrix(m, outputSize);
+
+        a2 = MlpMatrix(m, outputSize);
     }
 
     /*
@@ -551,7 +552,7 @@ public:
         //dL_dz2.noalias() = a2 - y_one_hot;
         dL_dz2 = a2;
         cblas_saxpy(     // y = y + alpha * x
-            a2.size32(), //n
+            dL_dz2.size32(), //n
             -1.0f,		 //alpha
             y_one_hot.data32(), //x
             1,			//incx
@@ -575,7 +576,7 @@ public:
 
         //dL_db2 = dL_dz2.colwise().sum() / m;
         MlpMatrix ones(1, dL_dz2.rows, 1.f);
-        dL_db2.gemm<MlpABTrans>(dL_dz2, ones, divM); // gemv could be faster
+        dL_db2.gemm(ones, dL_dz2, divM); // gemv could be faster
 
         //bias_2 -= lr * dL_db2;
         cblas_saxpy(		 // y = y + alpha * x
@@ -610,7 +611,7 @@ public:
 
         //dL_db1 = dL_dz1.colwise().sum() / m;
         ones = MlpMatrix(1, dL_dz1.rows, 1.f);
-        dL_db1.gemm<MlpABTrans>(dL_dz1, ones, divM); // gemv could be faster
+        dL_db1.gemm(ones, dL_dz1, divM); // gemv could be faster
 
         //bias_1 -= lr * dL_db1;
         cblas_saxpy(		 // y = y + alpha * x
@@ -631,14 +632,14 @@ public:
         const auto& y = trainData.y;
         for (int i = 0; i < y.size32(); i += 8) {
             __m256 probs = _mm256_set_ps(
-                a2.at32(i, y.at32(i)),
-                a2.at32(i, y.at32(i + 1)),
-                a2.at32(i, y.at32(i + 2)),
-                a2.at32(i, y.at32(i + 3)),
-                a2.at32(i, y.at32(i + 4)),
-                a2.at32(i, y.at32(i + 5)),
-                a2.at32(i, y.at32(i + 6)),
-                a2.at32(i, y.at32(i + 7)));
+                *a2.data32(i, y.at32(i)),
+                *a2.data32(i, y.at32(i + 1)),
+                *a2.data32(i, y.at32(i + 2)),
+                *a2.data32(i, y.at32(i + 3)),
+                *a2.data32(i, y.at32(i + 4)),
+                *a2.data32(i, y.at32(i + 5)),
+                *a2.data32(i, y.at32(i + 6)),
+                *a2.data32(i, y.at32(i + 7)));
             probs = _mm256_log_ps(probs);
             epoch_loss = _mm256_add_ps(epoch_loss, probs);
         }
@@ -652,6 +653,7 @@ public:
 
     void train(Dataset& trainData, int epochs = 10) {
         std::cout << "Epoch\tLoss\n";
+        // batchSize is already set to m
         auto& x = trainData.x;
         auto& y = trainData.y;
         int maxSamples = m * (x.rows / m);
@@ -672,6 +674,7 @@ public:
     }
 
     MlpVector<__m256i> predict(const MlpMatrix& test) {
+        setBatchSize(test.gemmRows);
         forward(test);
 
         MlpVector<__m256i> predictions(test.rows / 8);
