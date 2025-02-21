@@ -57,9 +57,13 @@ public:
     using std::vector<T256>::cend;
     using std::vector<T256>::rend;
     using std::vector<T256>::crend;
-    void setGemmView(int _gemmRows, int _gemmOffset) {
-        gemmRows = _gemmRows;
+    void setGemmView(int _gemmOffset, int _gemmRows) {
         gemmOffset = _gemmOffset;
+        gemmRows = _gemmRows;
+        if (gemmOffset + gemmRows >= size32()) {
+            std::runtime_error("wrong offsets");
+        }
+
     }
     size_t size256() const {
         return std::vector<T256>::size();
@@ -119,14 +123,14 @@ private:
 enum MlpTransMask {
     MlpNoneTrans = 0,
     MlpATrans = 1,
-    MlpBTrans = 2
+    MlpBTrans = 2,
+    MlpABTrans = 3,
 };
 using real_t = float;
 struct MlpMatrix {
     MlpMatrix() = default;
-    MlpMatrix(int _rows, int _cols, float val = 0.f) {
+    MlpMatrix(int _rows, int _cols, float val = 0.f) : rows(_rows) {
         gemmOffset = 0;
-        rows = pad8(_rows);
         gemmRows = rows;
         cols = pad8(_cols);
         data256.resize((rows * cols) / 8, _mm256_set1_ps(val));
@@ -153,53 +157,67 @@ struct MlpMatrix {
     template <MlpTransMask transMask = MlpNoneTrans>
     void gemm(const MlpMatrix& aMatrix, const MlpMatrix& bMatrix, float alpha = 1.f, float beta = 0.f) {
         float* C = data32();
-        float* A = aMatrix.data32();
-        float* B = bMatrix.data32();
+        const float* A = aMatrix.data32();
+        const float* B = bMatrix.data32();
         int M, N, K;
+        int lda, ldb; // pointers to help M/N swapping
         CBLAS_TRANSPOSE aTransOpt;
         CBLAS_TRANSPOSE bTransOpt;
         if constexpr (transMask == MlpNoneTrans) {
-            if (cols != B.rows) {
+            if (aMatrix.cols != bMatrix.gemmRows) {
                 throw std::runtime_error("wrong dim");
             }
             M = aMatrix.gemmRows;
             K = aMatrix.cols;
             N = bMatrix.cols;
+            lda = K;
+            ldb = N;
             aTransOpt = CblasNoTrans;
             bTransOpt = CblasNoTrans;
         }
         else if constexpr (transMask == MlpATrans) {
-            if (rows != B.rows) {
+            if (aMatrix.gemmRows!= bMatrix.gemmRows) {
                 throw std::runtime_error("wrong dim");
             }
             M = aMatrix.cols; // A trans!
             K = aMatrix.gemmRows; // A trans!
             N = bMatrix.cols;
+            lda = M;
+            ldb = N;
             aTransOpt = CblasTrans;
             bTransOpt = CblasNoTrans;
         }
         else if constexpr (transMask == MlpBTrans) {
-            if (cols != B.cols) {
+            if (aMatrix.cols != bMatrix.cols) {
                 throw std::runtime_error("wrong dim");
             }
             M = aMatrix.gemmRows;
             K = aMatrix.cols;
             N = bMatrix.gemmRows; // B trans!
+            lda = K;
+            ldb = K;
             aTransOpt = CblasNoTrans;
             bTransOpt = CblasTrans;
         }
-        else if constexpr (transMask == (MlpATrans | MlpBTrans) {
-            if (rows != B.cols) {
+        else if constexpr (transMask == (MlpATrans | MlpBTrans)) {
+            if (aMatrix.gemmRows != bMatrix.cols) {
                 throw std::runtime_error("wrong dim");
             }
             M = aMatrix.cols; // A trans!
             K = aMatrix.gemmRows; // A trans!
             N = bMatrix.gemmRows; // B trans!
+            lda = M;
+            ldb = K;
             aTransOpt = CblasTrans;
             bTransOpt = CblasTrans;
         }
         else {
             static_assert(false, "wrong mask");
+        }
+
+        // handle gemv scenario:
+        if (N == 1) {
+            std::swap(M, N);
         }
 
         if (M != rows || N != cols) {
@@ -214,13 +232,14 @@ struct MlpMatrix {
             K,
             alpha,
             A,
-            K,	          // lda, leading dimension of A (num col in A)
+            lda,	          // lda, leading dimension of A (num col in A)
             B,
-            N,    // ldb, leading dimension of B (num col in B)
+            ldb,    // ldb, leading dimension of B (num col in B)
             beta,             // beta
             C,	  // C (OUT, result)
             N);   // ldc, leading dimension of C (num col in C)
     }
+
 
     //v dim(mask) = dim(*this)
     void positive_mask(const MlpMatrix& mask) {
@@ -453,6 +472,7 @@ class MLP {
 public:
     /* arg m: mini-batch size */
     MLP(size_t inputSize, size_t hiddenSize, size_t outputSize, int m, float lr) : m(m), lr(lr) {
+        outputSize = pad8(outputSize);
 
         // Initialize weight_1: values in [-1,1] scaled to [-0.01, 0.01]
 
@@ -481,6 +501,11 @@ public:
         dL_da1 = MlpMatrix(m, hiddenSize);
         dL_dz1 = MlpMatrix(m, hiddenSize);
         dL_dz2 = MlpMatrix(m, outputSize);
+        dL_dW2 = MlpMatrix(hiddenSize, outputSize);
+        dL_db2 = MlpMatrix(1 ,outputSize);
+        dL_dW1 = MlpMatrix(inputSize, hiddenSize);
+        dL_db1 = MlpMatrix(1, hiddenSize);
+
         y_one_hot = MlpMatrix(m, outputSize); // dl_da2
 
         //std::cout << "weight_1 (first 5 rows):\n" << weight_1.topRows(5) << "\n\n";
@@ -549,8 +574,8 @@ public:
             1);				 // incy
 
         //dL_db2 = dL_dz2.colwise().sum() / m;
-        MlpMatrix ones(dL_dz2.rows, 1, 1.f);
-        dL_db2.gemm<MlpATrans>(dL_dz2, ones, divM); // gemv could be faster
+        MlpMatrix ones(1, dL_dz2.rows, 1.f);
+        dL_db2.gemm<MlpABTrans>(dL_dz2, ones, divM); // gemv could be faster
 
         //bias_2 -= lr * dL_db2;
         cblas_saxpy(		 // y = y + alpha * x
@@ -584,8 +609,8 @@ public:
 
 
         //dL_db1 = dL_dz1.colwise().sum() / m;
-        ones = MlpMatrix(dL_dz1.rows, 1, 1.f);
-        dL_db1.gemm<MlpATrans>(dL_dz1, ones, divM); // gemv could be faster
+        ones = MlpMatrix(1, dL_dz1.rows, 1.f);
+        dL_db1.gemm<MlpABTrans>(dL_dz1, ones, divM); // gemv could be faster
 
         //bias_1 -= lr * dL_db1;
         cblas_saxpy(		 // y = y + alpha * x
@@ -678,7 +703,7 @@ public:
     // temp matrices
     MlpMatrix y_one_hot;
     MlpMatrix dL_dz2;
-    MlpMatrix dL_dW2;
+    MlpMatrix dL_dW2; // dim [hiddenSize x outputSize]
     MlpMatrix dL_db2;
     MlpMatrix dL_da1;
     MlpMatrix dL_dz1;
@@ -701,7 +726,7 @@ int main() {
     size_t hiddenSize = 128;
     const auto maxLabel = std::max_element(trainData.y.data32(), trainData.y.end32());
     size_t outputSize = *maxLabel + 1;
-    MLP mlp{ inputSize, hiddenSize, outputSize, 60, 0.01f };
+    MLP mlp{ inputSize, hiddenSize, outputSize, 64, 0.01f };
 
     Time begin = getTime();
 
