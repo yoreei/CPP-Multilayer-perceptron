@@ -527,6 +527,7 @@ public:
         //z1 = (batch * weight_1) +(rowWise) bias_1;
         z1.dup_rows(bias_1);
         z1.gemm(batch, weight_1);
+        zzz write unit tests for dup_rows, softmax, gemm, etc. to verify behavior
 
         a1 = z1;
         relu(a1);
@@ -625,27 +626,29 @@ public:
     }
 
     void evalEpoch(Dataset& trainData, int epoch) {
-        //trainData.x.setGemmView(0, trainData.x.rows); // if we want to eval on whole data
+        trainData.x.setGemmView(0, trainData.x.rows);
+        setBatchSize(trainData.x.rows);
         forward(trainData.x);
+        setBatchSize(m);
         __m256 epoch_loss = _mm256_setzero_ps();
         size_t outSize = a2.cols;
         const auto& y = trainData.y;
-        for (int i = 0; i < y.size32(); i += 8) {
+        for (int i = 0; i < a2.rows; i += 8) {
             __m256 probs = _mm256_set_ps(
-                *a2.data32(i, y.at32(i)),
-                *a2.data32(i, y.at32(i + 1)),
-                *a2.data32(i, y.at32(i + 2)),
-                *a2.data32(i, y.at32(i + 3)),
-                *a2.data32(i, y.at32(i + 4)),
-                *a2.data32(i, y.at32(i + 5)),
-                *a2.data32(i, y.at32(i + 6)),
-                *a2.data32(i, y.at32(i + 7)));
+                *a2.data32(i,     y.at32(i)),
+                *a2.data32(i + 1, y.at32(i + 1)),
+                *a2.data32(i + 2, y.at32(i + 2)),
+                *a2.data32(i + 3, y.at32(i + 3)),
+                *a2.data32(i + 4, y.at32(i + 4)),
+                *a2.data32(i + 5, y.at32(i + 5)),
+                *a2.data32(i + 6, y.at32(i + 6)),
+                *a2.data32(i + 7, y.at32(i + 7)));
             probs = _mm256_log_ps(probs);
             epoch_loss = _mm256_add_ps(epoch_loss, probs);
         }
 
         float epoch_loss_sum = sum256f(epoch_loss);
-        epoch_loss_sum /= -int(y.size32());
+        epoch_loss_sum /= -int(a2.rows);
         losses.push_back(epoch_loss_sum);
 
         std::cout << (epoch + 1) << "\t" << epoch_loss_sum << std::endl;
@@ -669,7 +672,7 @@ public:
             Seconds elapsed = getTime() - begin;
             std::cout << "epoch time: " << elapsed << std::endl;
 
-            //evalEpoch(trainData, epoch);
+            evalEpoch(trainData, epoch);
         }
     }
 
@@ -745,7 +748,7 @@ int main() {
         acc = _mm256_add_epi32(acc, ones);
     }
 
-    std::cout << "Test Accuracy: " << sum256i(acc) << std::endl;
+    std::cout << "Test Accuracy: " << sum256i(acc) / float(testData.y.gemmRows) << std::endl;
 
     Seconds elapsed = getTime() - begin;
     std::cout << "benchmark: " << elapsed;
