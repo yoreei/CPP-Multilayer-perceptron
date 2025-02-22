@@ -26,6 +26,11 @@
 
 #include "simdUtil.h"
 
+using EigenMatrix = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+using EigenRowVectorf = Eigen::RowVector<float, Eigen::Dynamic>;
+using EigenVectorf = Eigen::Vector<float, Eigen::Dynamic>;
+
+
 using Time = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
 Time getTime() {
@@ -515,7 +520,19 @@ struct Dataset {
     MlpVector<__m256i> y;        // Label vector (numImages x 1)
 };
 
+namespace _testEig {
+    EigenMatrix fromMlp(const MlpMatrix& mlp);
+    EigenRowVectorf fromMlp(const MlpVector<__m256>& mlp);
+    EigenMatrix relu(const EigenMatrix& x);
+    EigenMatrix softmax(const EigenMatrix& x);
+    EigenMatrix one_hot(const EigenMatrix& x, const MlpVector<__m256i>& y);
+    EigenMatrix dup_rows(const EigenMatrix& x, const EigenRowVectorf& y);
+    EigenMatrix positive_mask(const EigenMatrix& data, const EigenMatrix& mask);
+    void cmpMat(const EigenMatrix& a, const EigenMatrix& b);
+}
+
 class MLP {
+
 public:
     /* arg m: mini-batch size */
     MLP(size_t inputSize, size_t hiddenSize, size_t outputSize, int m, float lr) : m(m), lr(lr) {
@@ -576,19 +593,47 @@ public:
     */
     void forward(const MlpMatrix& batch) {
 
-        //z1 = (batch * weight_1) +(rowWise) bias_1;
+        // vEigen
+        EigenMatrix batchEig = _testEig::fromMlp(batch);
+        EigenMatrix weight_1Eig = _testEig::fromMlp(weight_1);
+        EigenRowVectorf bias_1Eig = _testEig::fromMlp(bias_1);
+        EigenMatrix z1Eig = (batchEig * weight_1Eig).rowwise() + bias_1Eig;
+        // ^Eigen
         z1.dup_rows(bias_1);
-        z1.gemm(batch, weight_1);
+        z1.gemm(batch, weight_1, 1.f, 1.f);
 
+        // vEigen
+        EigenMatrix a1Eig = _testEig::relu(z1Eig);
+        // ^Eigen
         a1 = z1;
         relu(a1);
 
+        // vEigen
+        EigenMatrix weight_2Eig = _testEig::fromMlp(weight_2);
+        EigenRowVectorf bias_2Eig = _testEig::fromMlp(bias_2);
+        EigenMatrix z2Eig = (a1Eig * weight_2Eig).rowwise() + bias_2Eig;
+        // ^Eigen
         //z2 = (a1 * weight_2) +(rowWise) bias_2;
         z2.dup_rows(bias_2);
-        z2.gemm(a1, weight_2);
+        z2.gemm(a1, weight_2, 1.f, 1.f);
 
+        // vEigen
+        EigenMatrix a2Eig = _testEig::softmax(z2Eig);
+        // ^Eigen
         a2 = z2;
         softmax(a2);
+
+        // v CMP Eig
+
+        EigenMatrix z1Cmp = _testEig::fromMlp(z1);
+        EigenMatrix a1Cmp = _testEig::fromMlp(a1);
+        EigenMatrix z2Cmp = _testEig::fromMlp(z2);
+        EigenMatrix a2Cmp = _testEig::fromMlp(a2);
+
+        _testEig::cmpMat(z1Cmp, z1Eig);
+        _testEig::cmpMat(a1Cmp, a1Eig);
+        _testEig::cmpMat(z2Cmp, z2Eig);
+        _testEig::cmpMat(a2Cmp, a2Eig);
     }
 
     /*
@@ -598,9 +643,17 @@ public:
     batchRows: this batch ends at endRow = startRow + batchSize
     */
     void backward(const MlpMatrix& batchX, const MlpVector<__m256i>& batchY) {
+        // vEigen
+        EigenMatrix batchXEig = _testEig::fromMlp(batchX);
+        EigenMatrix y_one_hotEig = _testEig::one_hot(batchXEig, batchY);
+        // ^Eigen
         y_one_hot.one_hot(batchY);
 
         // 2. Compute gradient at output layer:
+        // vEigen
+        EigenMatrix a2Eig = _testEig::fromMlp(a2);
+        EigenMatrix dL_dz2Eig = a2Eig - y_one_hotEig;
+        // ^Eigen
         //dL_dz2.noalias() = a2 - y_one_hot;
         dL_dz2 = a2;
         cblas_saxpy(     // y = y + alpha * x
@@ -614,9 +667,17 @@ public:
 
         float divM = 1.f / batchX.gemmRows;
         // 3. Gradients for the second (output) layer:
+        // vEigen
+        EigenMatrix a1Eig = _testEig::fromMlp(a1);
+        EigenMatrix dL_dW2Eig = (a1Eig.transpose() * dL_dz2Eig) * divM;
+        // ^Eigen
         //dL_dW2 = (a1.transpose() * dL_dz2) / m;
         dL_dW2.gemm<MlpATrans>(a1, dL_dz2, divM);
 
+        // vEigen
+        EigenMatrix weight_2Eig = _testEig::fromMlp(weight_2);
+        weight_2Eig -= lr * dL_dW2Eig;
+        // ^Eigen
         //weight_2 -= lr * dL_dW2;
         cblas_saxpy( // y = y + alpha * x
             dL_dW2.size32(), // x.size
@@ -626,10 +687,17 @@ public:
             weight_2.data32(), // y
             1);				 // incy
 
+        // vEigen
+        EigenMatrix dL_db2Eig = dL_dz2Eig.colwise().sum() * divM;
+        // ^Eigen
         //dL_db2 = dL_dz2.colwise().sum() / m;
         MlpMatrix ones(1, dL_dz2.rows, 1.f);
         dL_db2.gemm(ones, dL_dz2, divM); // gemv could be faster
 
+        // vEigen
+        EigenMatrix bias_2Eig = _testEig::fromMlp(bias_2);
+        bias_2Eig -= lr * dL_db2Eig;
+        // ^Eigen
         //bias_2 -= lr * dL_db2;
         cblas_saxpy(		 // y = y + alpha * x
             dL_db2.size32(), // x.size
@@ -640,9 +708,16 @@ public:
             1);				 // incy
 
         // 4. Backpropagate to the hidden layer:
+        // vEigen
+        EigenMatrix dL_da1Eig = dL_dz2Eig * weight_2Eig.transpose();
+        // ^Eigen
         //dL_da1 = dL_dz2 * weight_2.transpose();
         dL_da1.gemm<MlpBTrans>(dL_dz2, weight_2);
 
+        // vEigen
+        EigenMatrix z1Eig = _testEig::fromMlp(z1);
+        EigenMatrix dL_dz1Eig = (dL_da1Eig.array() * (z1Eig.array() > 0).cast<real_t>()).matrix();
+        // ^Eigen
         //dL_dz1 = (dL_da1.array() * (z1.array() > 0).cast<real_t>()).matrix();
         dL_dz1 = dL_da1;
         dL_dz1.positive_mask(z1);
@@ -768,29 +843,81 @@ public:
     MlpMatrix dL_db1;
 };
 
-using EigenMatrix = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
-using EigenRowVectorf = Eigen::RowVector<real_t, Eigen::Dynamic>;
-using EigenVectorf = Eigen::Vector<real_t, Eigen::Dynamic>;
-EigenMatrix _testEigenFromMlp(const MlpMatrix& mlp) {
-    EigenMatrix eig = EigenMatrix(mlp.gemmRows, mlp.cols);
-    for (int row = 0; row < mlp.gemmRows; ++row) {
-        int mlpRow = row + mlp.gemmOffset;
-        for (int col = 0; col < mlp.cols; ++col) {
-            eig(row, col) = *mlp.data32(mlpRow, col);
+///////////////////////////////////////////////////////
+// TESTEIGEN
+
+/* Eigen implementations for comparisons with my implementations */
+namespace _testEig {
+    EigenMatrix fromMlp(const MlpMatrix& mlp) {
+        EigenMatrix eig = EigenMatrix(mlp.gemmRows, mlp.cols);
+        for (int row = 0; row < mlp.gemmRows; ++row) {
+            int mlpRow = row + mlp.gemmOffset;
+            for (int col = 0; col < mlp.cols; ++col) {
+                eig(row, col) = *mlp.data32(mlpRow, col);
+            }
+
         }
-
+        return eig;
     }
-    return eig;
+
+    EigenRowVectorf fromMlp(const MlpVector<__m256>& mlp) {
+        EigenMatrix eig = EigenRowVectorf(mlp.gemmRows);
+        for (int row = 0; row < mlp.gemmRows; ++row) {
+            int mlpRow = row + mlp.gemmOffset;
+            eig(row) = mlp.at32(mlpRow);
+        }
+        return eig;
+    }
+    EigenMatrix relu(const EigenMatrix& x) {
+        return x.array().max(0.0).matrix();
+    };
+
+    EigenMatrix softmax(const EigenMatrix& x) {
+        EigenMatrix rowMax = x.rowwise().maxCoeff();
+        EigenMatrix x_stable = x - rowMax.replicate(1, x.cols());
+        EigenMatrix exp_x = x_stable.array().exp();
+        EigenVectorf rowSum = exp_x.rowwise().sum();
+        EigenMatrix sm = exp_x.array().colwise() / rowSum.array();
+        return sm;
+    };
+
+    EigenMatrix one_hot(const EigenMatrix& x, const MlpVector<__m256i>& y) {
+        EigenMatrix y_one_hot = x;
+        y_one_hot.setZero();
+        for (int i = 0; i < y_one_hot.rows(); ++i) {
+            y_one_hot(i, y.at32(i)) = 1.0f;
+        }
+        return y_one_hot;
+    };
+
+    EigenMatrix dup_rows(const EigenMatrix& x, const EigenRowVectorf& y) {
+        assert(x.cols() == y.cols());
+        return x.rowwise() + y;
+    };
+
+    EigenMatrix positive_mask(const EigenMatrix& data, const EigenMatrix& mask) {
+        return (data.array() * (mask.array() > 0).cast<real_t>()).matrix();
+    };
+
+    void cmpMat(const EigenMatrix& a, const EigenMatrix& b) {
+        if (a.isApprox(b)) {
+            std::cout << "Test passed: matrices are equal." << std::endl;
+        }
+        else {
+            std::cerr << "Test failed: matrices differ." << std::endl;
+            int printPrecision = 3;
+            Eigen::IOFormat fmt(printPrecision, 0, ", ", "\n", "[", "]"); // up printPrecision if diff hard to spot
+            std::cerr << "Matrix A:" << std::endl << a.format(fmt) << std::endl;
+            std::cerr << "Matrix B:" << std::endl << b.format(fmt) << std::endl;
+            assert(false);
+        }
+    }
 }
 
-EigenRowVectorf _testEigenFromMlp(const MlpVector<__m256>& mlp) {
-    EigenMatrix eig = EigenRowVectorf(mlp.gemmRows);
-    for (int row = 0; row < mlp.gemmRows; ++row) {
-        int mlpRow = row + mlp.gemmOffset;
-        eig(row) = mlp.at32(mlpRow);
-    }
-    return eig;
-}
+
+//// ^TESTEIGEN
+///////////////////////////////////////////////////
+
 
 bool nextPermute(std::vector<int>& in, std::vector<int>& out) {
 
@@ -804,19 +931,7 @@ bool nextPermute(std::vector<int>& in, std::vector<int>& out) {
     return std::next_permutation(in.begin(), in.end());
 }
 
-void _testCmpMat(EigenMatrix& a, EigenMatrix& b) {
-    if (a.isApprox(b)) {
-        std::cout << "Test passed: matrices are equal." << std::endl;
-    }
-    else {
-        std::cerr << "Test failed: matrices differ." << std::endl;
-        int printPrecision = 3;
-        Eigen::IOFormat fmt(printPrecision, 0, ", ", "\n", "[", "]"); // up printPrecision if diff hard to spot
-        std::cerr << "Matrix A:" << std::endl << a.format(fmt) << std::endl;
-        std::cerr << "Matrix B:" << std::endl << b.format(fmt) << std::endl;
-        assert(false);
-    }
-}
+
 
 
 void test_gemm(int m, int n, int k) {
@@ -827,12 +942,12 @@ void test_gemm(int m, int n, int k) {
         MlpMatrix matc = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
         matc.gemm<MlpNoneTrans>(mata, matb, 1.f);
 
-        EigenMatrix eigA = _testEigenFromMlp(mata);
-        EigenMatrix eigB = _testEigenFromMlp(matb);
+        EigenMatrix eigA = _testEig::fromMlp(mata);
+        EigenMatrix eigB = _testEig::fromMlp(matb);
         EigenMatrix eigCmp = eigA * eigB;
-        EigenMatrix mlpCmp = _testEigenFromMlp(matc);
+        EigenMatrix mlpCmp = _testEig::fromMlp(matc);
 
-        _testCmpMat(eigCmp, mlpCmp);
+        _testEig::cmpMat(eigCmp, mlpCmp);
     }
 
 
@@ -843,12 +958,12 @@ void test_gemm(int m, int n, int k) {
         MlpMatrix matc = MlpMatrix::Random(m * 8, n * 8, -5.f, 5.f);
         matc.gemm<MlpATrans>(mata, matb, 1.f);
 
-        EigenMatrix eigA = _testEigenFromMlp(mata).transpose();
-        EigenMatrix eigB = _testEigenFromMlp(matb);
+        EigenMatrix eigA = _testEig::fromMlp(mata).transpose();
+        EigenMatrix eigB = _testEig::fromMlp(matb);
         EigenMatrix eigCmp = eigA * eigB;
-        EigenMatrix mlpCmp = _testEigenFromMlp(matc);
+        EigenMatrix mlpCmp = _testEig::fromMlp(matc);
 
-        _testCmpMat(eigCmp, mlpCmp);
+        _testEig::cmpMat(eigCmp, mlpCmp);
     }
 
     // Test 5: MlpBTrans with multi-dim aMatrix
@@ -858,12 +973,12 @@ void test_gemm(int m, int n, int k) {
         MlpMatrix matc = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
         matc.gemm<MlpBTrans>(mata, matb, 1.f);
 
-        EigenMatrix eigA = _testEigenFromMlp(mata);
-        EigenMatrix eigB = _testEigenFromMlp(matb).transpose();
+        EigenMatrix eigA = _testEig::fromMlp(mata);
+        EigenMatrix eigB = _testEig::fromMlp(matb).transpose();
         EigenMatrix eigCmp = eigA * eigB;
-        EigenMatrix mlpCmp = _testEigenFromMlp(matc);
+        EigenMatrix mlpCmp = _testEig::fromMlp(matc);
 
-        _testCmpMat(eigCmp, mlpCmp);
+        _testEig::cmpMat(eigCmp, mlpCmp);
     }
 
     // Test 7: (MlpATrans | MlpBTrans) with multi-dim aMatrix
@@ -873,103 +988,77 @@ void test_gemm(int m, int n, int k) {
         MlpMatrix matc = MlpMatrix::Random(m * 8, n * 8, -5.f, 5.f);
         matc.gemm<MlpABTrans>(mata, matb, 1.f);
 
-        EigenMatrix eigA = _testEigenFromMlp(mata).transpose();
-        EigenMatrix eigB = _testEigenFromMlp(matb).transpose();
+        EigenMatrix eigA = _testEig::fromMlp(mata).transpose();
+        EigenMatrix eigB = _testEig::fromMlp(matb).transpose();
         EigenMatrix eigCmp = eigA * eigB;
-        EigenMatrix mlpCmp = _testEigenFromMlp(matc);
+        EigenMatrix mlpCmp = _testEig::fromMlp(matc);
 
-        _testCmpMat(eigCmp, mlpCmp);
+        _testEig::cmpMat(eigCmp, mlpCmp);
     }
 }
 
 void test_relu(int m, int n) {
-    auto eigenRelu = [](const EigenMatrix& x) {
-        return x.array().max(0.0).matrix();
-        };
     n *= 8;
     MlpMatrix mlp = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
-    EigenMatrix eig = _testEigenFromMlp(mlp);
+    EigenMatrix eig = _testEig::fromMlp(mlp);
     relu(mlp);
-    EigenMatrix mlpCmp = _testEigenFromMlp(mlp);
-    EigenMatrix eigCmp = eigenRelu(eig);
+    EigenMatrix mlpCmp = _testEig::fromMlp(mlp);
+    EigenMatrix eigCmp = _testEig::relu(eig);
 
-    _testCmpMat(eigCmp, mlpCmp);
+    _testEig::cmpMat(eigCmp, mlpCmp);
 }
 void test_softmax(int m, int n) {
-    auto eigenSoftmax = [](const EigenMatrix& x) {
-        EigenMatrix rowMax = x.rowwise().maxCoeff();
-        EigenMatrix x_stable = x - rowMax.replicate(1, x.cols());
-        EigenMatrix exp_x = x_stable.array().exp();
-        EigenVectorf rowSum = exp_x.rowwise().sum();
-        EigenMatrix sm = exp_x.array().colwise() / rowSum.array();
-        return sm;
-        };
 
     n *= 8;
     MlpMatrix mlp = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
-    EigenMatrix eig = _testEigenFromMlp(mlp);
+    EigenMatrix eig = _testEig::fromMlp(mlp);
 
     softmax(mlp);
-    EigenMatrix mlpCmp = _testEigenFromMlp(mlp);
-    EigenMatrix eigCmp = eigenSoftmax(eig);
+    EigenMatrix mlpCmp = _testEig::fromMlp(mlp);
+    EigenMatrix eigCmp = _testEig::softmax(eig);
 
-    _testCmpMat(eigCmp, mlpCmp);
+    _testEig::cmpMat(eigCmp, mlpCmp);
 }
 void test_one_hot(int m, int n) {
-    auto eigenOneHot = [](const EigenMatrix& x, const MlpVector<__m256i>& y) {
-        EigenMatrix y_one_hot = x;
-        y_one_hot.setZero();              // Sets all entries to zero
-        for (int i = 0; i < y_one_hot.rows(); ++i) {
-            y_one_hot(i, y.at32(i)) = 1.0f;
-        }
-        return y_one_hot;
-        };
 
     n *= 8;
     MlpMatrix mlp = MlpMatrix::Random(m * 8, n * 8, -5.f, 5.f);
-    EigenMatrix eig = _testEigenFromMlp(mlp);
+    EigenMatrix eig = _testEig::fromMlp(mlp);
 
     MlpVector<__m256i> y = MlpVector<__m256i>::Random(m * 8, 0, n * 8 - 1);
     mlp.one_hot(y);
-    EigenMatrix mlpCmp = _testEigenFromMlp(mlp);
-    EigenMatrix eigCmp = eigenOneHot(eig, y);
+    EigenMatrix mlpCmp = _testEig::fromMlp(mlp);
+    EigenMatrix eigCmp = _testEig::one_hot(eig, y);
 
-    _testCmpMat(eigCmp, mlpCmp);
+    _testEig::cmpMat(eigCmp, mlpCmp);
 }
 void test_dup_rows(int m, int n) {
-    auto eigenDupRows = [](const EigenMatrix& x, const EigenRowVectorf& y) {
-        assert(x.cols() == y.cols());
-        return x.rowwise() + y;
-        };
     n *= 8;
     MlpMatrix mlp = MlpMatrix::Random(m, n * 8, 0.f, 0.f);
-    EigenMatrix eig = _testEigenFromMlp(mlp);
+    EigenMatrix eig = _testEig::fromMlp(mlp);
 
     MlpVector<__m256> y = MlpVector<__m256>::Random(n * 8, -5.f, 5.f);
-    EigenRowVectorf eigY = _testEigenFromMlp(y);
+    EigenRowVectorf eigY = _testEig::fromMlp(y);
     mlp.dup_rows(y);
-    EigenMatrix mlpCmp = _testEigenFromMlp(mlp);
-    EigenMatrix eigCmp = eigenDupRows(eig, eigY);
+    EigenMatrix mlpCmp = _testEig::fromMlp(mlp);
+    EigenMatrix eigCmp = _testEig::dup_rows(eig, eigY);
 
-    _testCmpMat(eigCmp, mlpCmp);
+    _testEig::cmpMat(eigCmp, mlpCmp);
 
 }
 
 void test_positive_mask(int m, int n) {
-    auto eigenPositiveMask = [](const EigenMatrix& data, const EigenMatrix& mask) {
-        return (data.array() * (mask.array() > 0).cast<real_t>()).matrix();
-        };
     n *= 8;
     MlpMatrix mlp = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
     MlpMatrix mlpMask = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
-    EigenMatrix eig = _testEigenFromMlp(mlp);
-    EigenMatrix eigMask = _testEigenFromMlp(mlpMask);
+    EigenMatrix eig = _testEig::fromMlp(mlp);
+    EigenMatrix eigMask = _testEig::fromMlp(mlpMask);
 
     mlp.positive_mask(mlpMask);
-    EigenMatrix mlpCmp = _testEigenFromMlp(mlp);
-    EigenMatrix eigCmp = eigenPositiveMask(eig, eigMask);
+    EigenMatrix mlpCmp = _testEig::fromMlp(mlp);
+    EigenMatrix eigCmp = _testEig::positive_mask(eig, eigMask);
 
-    _testCmpMat(eigCmp, mlpCmp);
+    _testEig::cmpMat(eigCmp, mlpCmp);
 }
 
 void testRun() {
