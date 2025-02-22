@@ -1,4 +1,11 @@
-﻿#include <iostream>
+﻿#define _SILENCE_CXX23_DENORM_DEPRECATION_WARNING
+#define _SILENCE_ALL_CXX23_DEPRECATION_WARNINGS
+#include "Eigen/Dense"
+#undef _SILENCE_CXX23_DENORM_DEPRECATION_WARNING
+#undef _SILENCE_ALL_CXX23_DEPRECATION_WARNINGS
+
+
+#include <iostream>
 #include <numeric>
 #include <algorithm>
 #include <fstream>
@@ -11,6 +18,7 @@
 #include <chrono>
 #include <immintrin.h>
 #include <cassert>
+
 
 #define SLEEF_STATIC_LIBS
 #include "sleef/sleef.h"
@@ -45,10 +53,12 @@ public:
     using T32 = std::conditional_t<std::is_same_v<T256, __m256i>, int, float>;
 
     MlpVector() = default;
-    MlpVector(size_t size, T32 val = 0) : std::vector<T256>(pad8(size) / 8, Set1(val)), gemmRows(size) {}
+    MlpVector(size_t size, T32 val = 0) : std::vector<T256>(size / 8, Set1(val)), gemmRows(size) {
+        assert(size % 8 == 0);
+    }
     //using std::vector<T256>::vector;
     using std::vector<T256>::clear;
-    using std::vector<T256>::resize;
+    //using std::vector<T256>::resize;
 
     using std::vector<T256>::begin;
     using std::vector<T256>::cbegin;
@@ -65,6 +75,25 @@ public:
             std::runtime_error("wrong offsets");
         }
 
+    }
+    static MlpVector<T256> Random(int size, T32 minVal, T32 maxVal) {
+        assert(size % 8 == 0);
+        MlpVector<T256> vec(size, static_cast<T32>(0));
+        T32* data = vec.data32();
+        std::mt19937 rng(std::random_device{}());
+        if constexpr (std::is_same_v<T32, float>) {
+            std::uniform_real_distribution<float> dist(minVal, maxVal);
+            for (size_t i = 0; i < vec.size32(); ++i) {
+                data[i] = dist(rng);
+            }
+        }
+        else {
+            std::uniform_int_distribution<int> dist(minVal, maxVal);
+            for (size_t i = 0; i < vec.size32(); ++i) {
+                data[i] = dist(rng);
+            }
+        }
+        return vec;
     }
     size_t size256() const {
         return std::vector<T256>::size();
@@ -131,10 +160,28 @@ using real_t = float;
 struct MlpMatrix {
     MlpMatrix() = default;
     MlpMatrix(int _rows, int _cols, float val = 0.f) : rows(_rows) {
+        assert(_cols % 8 == 0);
         gemmOffset = 0;
         gemmRows = rows;
         cols = pad8(_cols);
         data256.resize((rows * cols) / 8, _mm256_set1_ps(val));
+    }
+
+    static MlpMatrix Random(int _rows, int _cols, float minVal, float maxVal) {
+        MlpMatrix mat(_rows, _cols);
+        seqRan256(mat.data256.data(), mat.end256(), minVal, maxVal);
+        return mat;
+
+    }
+    std::string toStr() {
+        std::string str = "";
+        for (int row = gemmOffset; row < gemmOffset + gemmRows; ++row) {
+            for (int col = 0; col < cols; ++col) {
+                str += std::to_string(*data32(row, col)) + " ";
+            }
+            str += "\n";
+        }
+        return str;
     }
     void setGemmView(int _gemmOffset, int _gemmRows) {
         gemmOffset = _gemmOffset;
@@ -145,6 +192,7 @@ struct MlpMatrix {
     }
 
     void one_hot(const MlpVector<__m256i>& vec) {
+        assert(rows == vec.gemmRows);
         for (auto& e : data256) {
             e = _mm256_setzero_ps();
         }
@@ -177,7 +225,7 @@ struct MlpMatrix {
             bTransOpt = CblasNoTrans;
         }
         else if constexpr (transMask == MlpATrans) {
-            if (aMatrix.gemmRows!= bMatrix.gemmRows) {
+            if (aMatrix.gemmRows != bMatrix.gemmRows) {
                 throw std::runtime_error("wrong dim");
             }
             M = aMatrix.cols; // A trans!
@@ -241,7 +289,7 @@ struct MlpMatrix {
     void positive_mask(const MlpMatrix& mask) {
         __m256 zeros = _mm256_setzero_ps();
         for (size_t i = 0; i < size256(); ++i) {
-            __m256 mask8 = _mm256_cmp_ps(mask.data256[i], zeros, _CMP_GT_OS); // elem > 0 ? 1 : 0
+            __m256 mask8 = _mm256_cmp_ps(mask.data256[i], zeros, _CMP_GT_OS); // mask > 0 ? 1 : 0
             data256[i] = _mm256_and_ps(data256[i], mask8); // mask == 1 ? elem = elem : elem = 0
         }
 
@@ -351,23 +399,25 @@ struct Dataset {
         // Read header: magic number, number of images, rows, and columns.
         dataIfstream.read(reinterpret_cast<char*>(&magicNumber), sizeof(magicNumber));
         dataIfstream.read(reinterpret_cast<char*>(&numImages), sizeof(numImages));
-        dataIfstream.read(reinterpret_cast<char*>(&numRows), sizeof(numRows));
-        dataIfstream.read(reinterpret_cast<char*>(&numCols), sizeof(numCols));
+        dataIfstream.read(reinterpret_cast<char*>(&imageRows), sizeof(imageRows));
+        dataIfstream.read(reinterpret_cast<char*>(&imageCols), sizeof(imageCols));
 
         magicNumber = swapEndian(magicNumber);
         numImages = swapEndian(numImages);
-        numRows = swapEndian(numRows);
-        numCols = swapEndian(numCols);
+        imageRows = swapEndian(imageRows);
+        imageCols = swapEndian(imageCols);
 
         std::cout << "Magic Number: " << magicNumber << "\n";
-        std::cout << "Number of Images: " << numImages << "\n";
-        std::cout << "Rows: " << numRows << "\n";
-        std::cout << "Columns: " << numCols << "\n";
+        std::cout << "Number of Images in file: " << numImages << "\n";
+        numImages = (numImages / 8) * 8;
+        std::cout << "Number of Images read: " << numImages << "\n";
+        std::cout << "Rows: " << imageRows << "\n";
+        std::cout << "Columns: " << imageCols << "\n";
 
-        if ((numRows * numCols) % 8 != 0) {
+        if ((imageRows * imageCols) % 8 != 0) {
             throw std::runtime_error("numCol must be divisible by 8");
         }
-        x = MlpMatrix(numImages, numRows * numCols);
+        x = MlpMatrix(numImages, imageRows * imageCols);
 
         //Read data:
         for (auto& e : x.data256) {
@@ -399,15 +449,17 @@ struct Dataset {
         numLabels = swapEndian(numLabels);
 
         std::cout << "Magic Number: " << magicNumber << "\n";
-        std::cout << "Number of Labels: " << numLabels << "\n";
+        std::cout << "Number of Labels in file: " << numLabels << "\n";
+        numLabels = (numLabels / 8) * 8;
+        std::cout << "Number of Labels read: " << numLabels << "\n";
 
         if (numLabels != numImages) {
             std::cerr << "numLabels != numImages" << std::endl;
             exit(-1);
         }
 
-        y.resize(numImages);
-        for (size_t i = 0; i < numImages; ++i) {
+        y = MlpVector<__m256i>(numLabels);
+        for (size_t i = 0; i < y.size32(); ++i) {
             char byte;
             labelIfstream.read(&byte, sizeof(char));
             if (!dataIfstream) {
@@ -444,8 +496,8 @@ struct Dataset {
         std::cout << "Data: min = " << *minVal << ", max = " << *maxVal << ", sum = " << sumVal << std::endl;
 
         std::cout << "Printing 40th image:" << std::endl;
-        for (size_t y = 0; y < numRows; ++y) {
-            for (size_t x = 0; x < numCols; ++x) {
+        for (size_t y = 0; y < imageRows; ++y) {
+            for (size_t x = 0; x < imageCols; ++x) {
                 std::cout << charFromFloat(getPixel(39, y, x));
             }
             std::cout << std::endl;
@@ -458,7 +510,7 @@ struct Dataset {
         return *(x.data32() + imgId * x.rows * x.cols + yPos * x.cols + xPos);
     }
 
-    uint32_t numRows = 0, numCols = 0; //< must be unit32_t to read from file properly!!!
+    uint32_t imageRows = 0, imageCols = 0; //< must be unit32_t to read from file properly!!!
     MlpMatrix x;  // Data matrix (numImages x (numRows*numCols))
     MlpVector<__m256i> y;        // Label vector (numImages x 1)
 };
@@ -489,7 +541,7 @@ public:
         setBatchSize(m);
 
         dL_dW2 = MlpMatrix(hiddenSize, outputSize);
-        dL_db2 = MlpMatrix(1 ,outputSize);
+        dL_db2 = MlpMatrix(1, outputSize);
         dL_dW1 = MlpMatrix(inputSize, hiddenSize);
         dL_db1 = MlpMatrix(1, hiddenSize);
 
@@ -527,7 +579,6 @@ public:
         //z1 = (batch * weight_1) +(rowWise) bias_1;
         z1.dup_rows(bias_1);
         z1.gemm(batch, weight_1);
-        zzz write unit tests for dup_rows, softmax, gemm, etc. to verify behavior
 
         a1 = z1;
         relu(a1);
@@ -635,7 +686,7 @@ public:
         const auto& y = trainData.y;
         for (int i = 0; i < a2.rows; i += 8) {
             __m256 probs = _mm256_set_ps(
-                *a2.data32(i,     y.at32(i)),
+                *a2.data32(i, y.at32(i)),
                 *a2.data32(i + 1, y.at32(i + 1)),
                 *a2.data32(i + 2, y.at32(i + 2)),
                 *a2.data32(i + 3, y.at32(i + 3)),
@@ -680,7 +731,7 @@ public:
         setBatchSize(test.gemmRows);
         forward(test);
 
-        MlpVector<__m256i> predictions(test.rows / 8);
+        MlpVector<__m256i> predictions(test.rows);
         for (int i = 0; i < predictions.size32(); ++i) {
             const real_t* start32 = a2.data32();
             const real_t* end32 = start32 + a2.cols;
@@ -717,7 +768,234 @@ public:
     MlpMatrix dL_db1;
 };
 
+using EigenMatrix = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
+using EigenRowVectorf = Eigen::RowVector<real_t, Eigen::Dynamic>;
+using EigenVectorf = Eigen::Vector<real_t, Eigen::Dynamic>;
+EigenMatrix _testEigenFromMlp(const MlpMatrix& mlp) {
+    EigenMatrix eig = EigenMatrix(mlp.gemmRows, mlp.cols);
+    for (int row = 0; row < mlp.gemmRows; ++row) {
+        int mlpRow = row + mlp.gemmOffset;
+        for (int col = 0; col < mlp.cols; ++col) {
+            eig(row, col) = *mlp.data32(mlpRow, col);
+        }
+
+    }
+    return eig;
+}
+
+EigenRowVectorf _testEigenFromMlp(const MlpVector<__m256>& mlp) {
+    EigenMatrix eig = EigenRowVectorf(mlp.gemmRows);
+    for (int row = 0; row < mlp.gemmRows; ++row) {
+        int mlpRow = row + mlp.gemmOffset;
+        eig(row) = mlp.at32(mlpRow);
+    }
+    return eig;
+}
+
+bool nextPermute(std::vector<int>& in, std::vector<int>& out) {
+
+    int n = in.size();
+    int k = out.size();
+    for (int i = 0; i < k; i++)
+    {
+        out[i] = in[i];
+    }
+    std::reverse(in.begin() + k, in.end());
+    return std::next_permutation(in.begin(), in.end());
+}
+
+void _testCmpMat(EigenMatrix& a, EigenMatrix& b) {
+    if (a.isApprox(b)) {
+        std::cout << "Test passed: matrices are equal." << std::endl;
+    }
+    else {
+        std::cerr << "Test failed: matrices differ." << std::endl;
+        int printPrecision = 3;
+        Eigen::IOFormat fmt(printPrecision, 0, ", ", "\n", "[", "]"); // up printPrecision if diff hard to spot
+        std::cerr << "Matrix A:" << std::endl << a.format(fmt) << std::endl;
+        std::cerr << "Matrix B:" << std::endl << b.format(fmt) << std::endl;
+        assert(false);
+    }
+}
+
+
+void test_gemm(int m, int n, int k) {
+    // Test 1: MlpNoneTrans with multi-dim aMatrix
+    {
+        MlpMatrix mata = MlpMatrix::Random(m, k * 8, -5.f, 5.f);
+        MlpMatrix matb = MlpMatrix::Random(k * 8, n * 8, -5.f, 5.f);
+        MlpMatrix matc = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
+        matc.gemm<MlpNoneTrans>(mata, matb, 1.f);
+
+        EigenMatrix eigA = _testEigenFromMlp(mata);
+        EigenMatrix eigB = _testEigenFromMlp(matb);
+        EigenMatrix eigCmp = eigA * eigB;
+        EigenMatrix mlpCmp = _testEigenFromMlp(matc);
+
+        _testCmpMat(eigCmp, mlpCmp);
+    }
+
+
+    // Test 3: MlpATrans
+    {
+        MlpMatrix mata = MlpMatrix::Random(k, m * 8, -5.f, 5.f);
+        MlpMatrix matb = MlpMatrix::Random(k, n * 8, -5.f, 5.f);
+        MlpMatrix matc = MlpMatrix::Random(m * 8, n * 8, -5.f, 5.f);
+        matc.gemm<MlpATrans>(mata, matb, 1.f);
+
+        EigenMatrix eigA = _testEigenFromMlp(mata).transpose();
+        EigenMatrix eigB = _testEigenFromMlp(matb);
+        EigenMatrix eigCmp = eigA * eigB;
+        EigenMatrix mlpCmp = _testEigenFromMlp(matc);
+
+        _testCmpMat(eigCmp, mlpCmp);
+    }
+
+    // Test 5: MlpBTrans with multi-dim aMatrix
+    {
+        MlpMatrix mata = MlpMatrix::Random(m, k * 8, -5.f, 5.f);
+        MlpMatrix matb = MlpMatrix::Random(n * 8, k * 8, -5.f, 5.f);
+        MlpMatrix matc = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
+        matc.gemm<MlpBTrans>(mata, matb, 1.f);
+
+        EigenMatrix eigA = _testEigenFromMlp(mata);
+        EigenMatrix eigB = _testEigenFromMlp(matb).transpose();
+        EigenMatrix eigCmp = eigA * eigB;
+        EigenMatrix mlpCmp = _testEigenFromMlp(matc);
+
+        _testCmpMat(eigCmp, mlpCmp);
+    }
+
+    // Test 7: (MlpATrans | MlpBTrans) with multi-dim aMatrix
+    {
+        MlpMatrix mata = MlpMatrix::Random(k * 8, m * 8, -5.f, 5.f);
+        MlpMatrix matb = MlpMatrix::Random(n * 8, k * 8, -5.f, 5.f);
+        MlpMatrix matc = MlpMatrix::Random(m * 8, n * 8, -5.f, 5.f);
+        matc.gemm<MlpABTrans>(mata, matb, 1.f);
+
+        EigenMatrix eigA = _testEigenFromMlp(mata).transpose();
+        EigenMatrix eigB = _testEigenFromMlp(matb).transpose();
+        EigenMatrix eigCmp = eigA * eigB;
+        EigenMatrix mlpCmp = _testEigenFromMlp(matc);
+
+        _testCmpMat(eigCmp, mlpCmp);
+    }
+}
+
+void test_relu(int m, int n) {
+    auto eigenRelu = [](const EigenMatrix& x) {
+        return x.array().max(0.0).matrix();
+        };
+    n *= 8;
+    MlpMatrix mlp = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
+    EigenMatrix eig = _testEigenFromMlp(mlp);
+    relu(mlp);
+    EigenMatrix mlpCmp = _testEigenFromMlp(mlp);
+    EigenMatrix eigCmp = eigenRelu(eig);
+
+    _testCmpMat(eigCmp, mlpCmp);
+}
+void test_softmax(int m, int n) {
+    auto eigenSoftmax = [](const EigenMatrix& x) {
+        EigenMatrix rowMax = x.rowwise().maxCoeff();
+        EigenMatrix x_stable = x - rowMax.replicate(1, x.cols());
+        EigenMatrix exp_x = x_stable.array().exp();
+        EigenVectorf rowSum = exp_x.rowwise().sum();
+        EigenMatrix sm = exp_x.array().colwise() / rowSum.array();
+        return sm;
+        };
+
+    n *= 8;
+    MlpMatrix mlp = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
+    EigenMatrix eig = _testEigenFromMlp(mlp);
+
+    softmax(mlp);
+    EigenMatrix mlpCmp = _testEigenFromMlp(mlp);
+    EigenMatrix eigCmp = eigenSoftmax(eig);
+
+    _testCmpMat(eigCmp, mlpCmp);
+}
+void test_one_hot(int m, int n) {
+    auto eigenOneHot = [](const EigenMatrix& x, const MlpVector<__m256i>& y) {
+        EigenMatrix y_one_hot = x;
+        y_one_hot.setZero();              // Sets all entries to zero
+        for (int i = 0; i < y_one_hot.rows(); ++i) {
+            y_one_hot(i, y.at32(i)) = 1.0f;
+        }
+        return y_one_hot;
+        };
+
+    n *= 8;
+    MlpMatrix mlp = MlpMatrix::Random(m * 8, n * 8, -5.f, 5.f);
+    EigenMatrix eig = _testEigenFromMlp(mlp);
+
+    MlpVector<__m256i> y = MlpVector<__m256i>::Random(m * 8, 0, n * 8 - 1);
+    mlp.one_hot(y);
+    EigenMatrix mlpCmp = _testEigenFromMlp(mlp);
+    EigenMatrix eigCmp = eigenOneHot(eig, y);
+
+    _testCmpMat(eigCmp, mlpCmp);
+}
+void test_dup_rows(int m, int n) {
+    auto eigenDupRows = [](const EigenMatrix& x, const EigenRowVectorf& y) {
+        assert(x.cols() == y.cols());
+        return x.rowwise() + y;
+        };
+    n *= 8;
+    MlpMatrix mlp = MlpMatrix::Random(m, n * 8, 0.f, 0.f);
+    EigenMatrix eig = _testEigenFromMlp(mlp);
+
+    MlpVector<__m256> y = MlpVector<__m256>::Random(n * 8, -5.f, 5.f);
+    EigenRowVectorf eigY = _testEigenFromMlp(y);
+    mlp.dup_rows(y);
+    EigenMatrix mlpCmp = _testEigenFromMlp(mlp);
+    EigenMatrix eigCmp = eigenDupRows(eig, eigY);
+
+    _testCmpMat(eigCmp, mlpCmp);
+
+}
+
+void test_positive_mask(int m, int n) {
+    auto eigenPositiveMask = [](const EigenMatrix& data, const EigenMatrix& mask) {
+        return (data.array() * (mask.array() > 0).cast<real_t>()).matrix();
+        };
+    n *= 8;
+    MlpMatrix mlp = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
+    MlpMatrix mlpMask = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
+    EigenMatrix eig = _testEigenFromMlp(mlp);
+    EigenMatrix eigMask = _testEigenFromMlp(mlpMask);
+
+    mlp.positive_mask(mlpMask);
+    EigenMatrix mlpCmp = _testEigenFromMlp(mlp);
+    EigenMatrix eigCmp = eigenPositiveMask(eig, eigMask);
+
+    _testCmpMat(eigCmp, mlpCmp);
+}
+
+void testRun() {
+    std::vector<int> in{ 1,2,3,4,5 };
+    std::vector<int> out(3, 0);
+    while (nextPermute(in, out)) {
+        int m = out[0];
+        int n = out[1];
+        int k = out[2];
+        test_gemm(m, n, k);
+    }
+    in = std::vector<int>{ 1,2,3,4,5 };
+    out = std::vector<int>(2, 0);
+    while (nextPermute(in, out)) {
+        int m = out[0];
+        int n = out[1];
+        test_relu(m, n);
+        test_softmax(m, n);
+        test_one_hot(m, n);
+        test_dup_rows(m, n);
+        test_positive_mask(m, n);
+    }
+}
+
 int main() {
+    testRun();
     bool HALVEDATA = false;
     bool DEBUGSTATISTICS = false;
 
@@ -728,7 +1006,7 @@ int main() {
         trainData.statistics();
     }
 
-    size_t inputSize = trainData.numRows * trainData.numCols;
+    size_t inputSize = trainData.imageRows * trainData.imageCols;
     size_t hiddenSize = 128;
     const auto maxLabel = std::max_element(trainData.y.data32(), trainData.y.end32());
     size_t outputSize = *maxLabel + 1;
@@ -736,7 +1014,7 @@ int main() {
 
     Time begin = getTime();
 
-    mlp.train(trainData, 8);
+    mlp.train(trainData, 1);
     MlpVector<__m256i> predictions = mlp.predict(testData.x);
 
     //double accuracy = (predictions.array() == testData.labels.array()).cast<double>().mean();
