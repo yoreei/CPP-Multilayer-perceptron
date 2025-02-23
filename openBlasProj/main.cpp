@@ -47,6 +47,7 @@ uint32_t swapEndian(uint32_t val) {
 }
 
 
+struct Dataset;
 template <typename T256>
 class MlpVector : private std::vector<T256> {
     static_assert(std::is_same_v<T256, __m256> || std::is_same_v<T256, __m256i>,
@@ -73,14 +74,6 @@ public:
     using std::vector<T256>::cend;
     using std::vector<T256>::rend;
     using std::vector<T256>::crend;
-    void setGemmView(int _gemmOffset, int _gemmRows) {
-        gemmOffset = _gemmOffset;
-        gemmRows = _gemmRows;
-        if (gemmOffset + gemmRows >= size32()) {
-            std::runtime_error("wrong offsets");
-        }
-
-    }
     static MlpVector<T256> Random(int size, T32 minVal, T32 maxVal) {
         assert(size % 8 == 0);
         MlpVector<T256> vec(size, static_cast<T32>(0));
@@ -152,7 +145,6 @@ private:
             return _mm256_set1_epi32(val);
         }
     }
-
 };
 
 enum MlpTransMask {
@@ -188,21 +180,16 @@ struct MlpMatrix {
         }
         return str;
     }
-    void setGemmView(int _gemmOffset, int _gemmRows) {
-        gemmOffset = _gemmOffset;
-        gemmRows = _gemmRows;
-        if (gemmOffset + gemmRows >= rows) {
-            std::runtime_error("wrong offsets");
-        }
-    }
 
-    void one_hot(const MlpVector<__m256i>& vec) {
-        assert(rows == vec.gemmRows);
+    void one_hot(const MlpVector<__m256i>& y) {
+        // Usually need to ensure output matrix has cols = outputSize
+        // But Mlp constructor already saw to that, since this one_hot is inplace
+        assert(rows == gemmRows && gemmRows == y.gemmRows);
         for (auto& e : data256) {
             e = _mm256_setzero_ps();
         }
-        for (size_t i = 0; i < vec.gemmRows; ++i) {
-            int label = vec.at32(vec.gemmOffset + i);
+        for (size_t i = 0; i < y.gemmRows; ++i) {
+            int label = y.at32(y.gemmOffset + i);
             *data32(i, label) = 1.0f;
         }
     }
@@ -345,8 +332,9 @@ struct MlpMatrix {
     std::vector<__m256> data256; // needs 32-byte alignment because we will be reading it as __m256
     int rows;
     int cols; // number of floats on x axis, i.e. __m256-width * 8
-    int gemmOffset = 0; // used only in gemm ops
-    int gemmRows;   // used only in gemm ops
+    int gemmOffset = 0; // Change through Dataset::setGemmView. used only in gemm ops
+    int gemmRows;   // Change through Dataset::setGemmView. used only in gemm ops
+
 };
 
 void relu(MlpMatrix& x) {
@@ -474,6 +462,18 @@ struct Dataset {
         }
     }
 
+    void setGemmView(int _gemmOffset, int _gemmRows) {
+        x.gemmOffset = _gemmOffset;
+        x.gemmRows = _gemmRows;
+        y.gemmOffset = _gemmOffset;
+        y.gemmRows = _gemmRows;
+        if (_gemmOffset + _gemmRows >= x.size32() &&
+            _gemmOffset + _gemmRows >= y.size32()) {
+            std::runtime_error("wrong offsets");
+        }
+
+    }
+
     // Convert a pixel (float) to a character for visualization.
     char charFromFloat(float f) const {
         if (f > 0.7f) {
@@ -525,7 +525,7 @@ namespace _testEig {
     EigenRowVectorf fromMlp(const MlpVector<__m256>& mlp);
     EigenMatrix relu(const EigenMatrix& x);
     EigenMatrix softmax(const EigenMatrix& x);
-    EigenMatrix one_hot(const EigenMatrix& x, const MlpVector<__m256i>& y);
+    EigenMatrix one_hot(const MlpVector<__m256i>& y, int maxVal);
     EigenMatrix dup_rows(const EigenMatrix& x, const EigenRowVectorf& y);
     EigenMatrix positive_mask(const EigenMatrix& data, const EigenMatrix& mask);
     void cmpMat(const EigenMatrix& a, const EigenMatrix& b);
@@ -644,8 +644,7 @@ public:
     */
     void backward(const MlpMatrix& batchX, const MlpVector<__m256i>& batchY) {
         // vEigen
-        EigenMatrix batchXEig = _testEig::fromMlp(batchX);
-        EigenMatrix y_one_hotEig = _testEig::one_hot(batchXEig, batchY);
+        EigenMatrix y_one_hotEig = _testEig::one_hot(batchY, a2.cols); // a2.cols = outputSize
         // ^Eigen
         y_one_hot.one_hot(batchY);
 
@@ -723,9 +722,13 @@ public:
         dL_dz1.positive_mask(z1);
 
         // 5. Gradients for the first (hidden) layer:
+        EigenMatrix batchXEig = _testEig::fromMlp(batchX);
+        EigenMatrix dL_dW1Eig = (batchXEig.transpose() * dL_dz1Eig) * divM;
         //dL_dW1 = (X.transpose() * dL_dz1) / m;
         dL_dW1.gemm<MlpATrans>(batchX, dL_dz1, divM);
 
+        EigenMatrix weight_1Eig = _testEig::fromMlp(weight_1);
+        weight_1Eig -= lr * dL_dW1Eig;
         //weight_1 -= lr * dL_dW1;
         cblas_saxpy( // y = y + alpha * x
             dL_dW1.size32(), // x.size
@@ -737,10 +740,13 @@ public:
 
 
         //dL_db1 = dL_dz1.colwise().sum() / m;
+        EigenMatrix dL_db1Eig = dL_dz1Eig.colwise().sum() * divM;
         ones = MlpMatrix(1, dL_dz1.rows, 1.f);
         dL_db1.gemm(ones, dL_dz1, divM); // gemv could be faster
 
         //bias_1 -= lr * dL_db1;
+        EigenMatrix bias_1Eig = _testEig::fromMlp(bias_1);
+        bias_1Eig -= lr * dL_db1Eig;
         cblas_saxpy(		 // y = y + alpha * x
             dL_db1.size32(), // x.size
             -lr,			 // alpha
@@ -749,10 +755,36 @@ public:
             bias_1.data32(), // y
             1);				 // incy
 
+        // Compare Eigen and Mlp
+        EigenMatrix y_one_hotCmp = _testEig::fromMlp(y_one_hot);
+        _testEig::cmpMat(y_one_hotCmp, y_one_hotEig);
+        EigenMatrix dL_dz2Cmp = _testEig::fromMlp(dL_dz2);
+        _testEig::cmpMat(dL_dz2Cmp, dL_dz2Eig);
+        EigenMatrix dL_dW2Cmp = _testEig::fromMlp(dL_dW2);
+        _testEig::cmpMat(dL_dW2Cmp, dL_dW2Eig);
+        EigenMatrix weight_2Cmp = _testEig::fromMlp(weight_2);
+        _testEig::cmpMat(weight_2Cmp, weight_2Eig);
+        EigenMatrix dL_db2Cmp = _testEig::fromMlp(dL_db2);
+        _testEig::cmpMat(dL_db2Cmp, dL_db2Eig);
+        EigenMatrix bias_2Cmp = _testEig::fromMlp(bias_2);
+        _testEig::cmpMat(bias_2Cmp, bias_2Eig);
+        EigenMatrix dL_da1Cmp = _testEig::fromMlp(dL_da1);
+        _testEig::cmpMat(dL_da1Cmp, dL_da1Eig);
+        EigenMatrix dL_dz1Cmp = _testEig::fromMlp(dL_dz1);
+        _testEig::cmpMat(dL_dz1Cmp, dL_dz1Eig);
+        EigenMatrix dL_dW1Cmp = _testEig::fromMlp(dL_dW1);
+        _testEig::cmpMat(dL_dW1Cmp, dL_dW1Eig);
+        EigenMatrix weight_1Cmp = _testEig::fromMlp(weight_1);
+        _testEig::cmpMat(weight_1Cmp, weight_1Eig);
+        EigenMatrix dL_db1Cmp = _testEig::fromMlp(dL_db1);
+        _testEig::cmpMat(dL_db1Cmp, dL_db1Eig);
+        EigenMatrix bias_1Cmp = _testEig::fromMlp(bias_1);
+        _testEig::cmpMat(bias_1Cmp, bias_1Eig);
+
     }
 
     void evalEpoch(Dataset& trainData, int epoch) {
-        trainData.x.setGemmView(0, trainData.x.rows);
+        trainData.setGemmView(0, trainData.x.rows);
         setBatchSize(trainData.x.rows);
         forward(trainData.x);
         setBatchSize(m);
@@ -778,6 +810,20 @@ public:
         losses.push_back(epoch_loss_sum);
 
         std::cout << (epoch + 1) << "\t" << epoch_loss_sum << std::endl;
+
+
+
+        //vEigen:
+        //double epoch_lossEig = 0.0;
+        //for (int i = 0; i < trainData.labels.size(); ++i) {
+        //    // Avoid log(0) by adding a small epsilon if needed.
+        //    float prob = full_output(i, trainData.labels(i));
+        //    epoch_loss += std::log(prob);
+        //}
+        //epoch_loss = -epoch_loss / trainData.labels.size();
+        //losses.push_back(epoch_loss);
+        //std::cout << (epoch + 1) << "\t" << epoch_loss << std::endl;
+        // ^Eigen
     }
 
     void train(Dataset& trainData, int epochs = 10) {
@@ -790,8 +836,7 @@ public:
 
             Time begin = getTime();
             for (int i = 0; i < maxSamples; i += m) {
-                x.setGemmView(i, m);
-                y.setGemmView(i, m);
+                trainData.setGemmView(i, m);
                 forward(x);
                 backward(x, y);
             }
@@ -806,14 +851,27 @@ public:
         setBatchSize(test.gemmRows);
         forward(test);
 
-        MlpVector<__m256i> predictions(test.rows);
-        for (int i = 0; i < predictions.size32(); ++i) {
-            const real_t* start32 = a2.data32();
-            const real_t* end32 = start32 + a2.cols;
+        MlpVector<__m256i> predictions(test.gemmRows);
+        for (int row = 0; row < predictions.size32(); ++row) {
+            const float* start32 = a2.data32(row, 0);
+            const float* end32 = start32 + a2.cols;
             const auto maxIter = std::max_element(start32, end32);
             size_t maxIndex = std::distance(start32, maxIter);
-            predictions.at32(i) = maxIndex;
+            predictions.at32(row) = maxIndex;
         }
+
+        // vEigen
+        EigenMatrix a2Eig = _testEig::fromMlp(a2);
+        for (int i = 0; i < a2Eig.rows(); ++i) {
+            int maxIndex;
+            a2Eig.row(i).maxCoeff(&maxIndex);
+            std::cout << "predict.at32(" << i << ")=" << predictions.at32(i) << "; a2Eig.row(i).maxCoeff(&maxIndex) = " << maxIndex << "\n";
+            if (predictions.at32(i) != maxIndex) {
+                std::cerr << "wrong predict\n";
+            }
+        }
+        // ^Eigen
+
 
         return predictions;
     }
@@ -881,11 +939,12 @@ namespace _testEig {
         return sm;
     };
 
-    EigenMatrix one_hot(const EigenMatrix& x, const MlpVector<__m256i>& y) {
-        EigenMatrix y_one_hot = x;
+    EigenMatrix one_hot(const MlpVector<__m256i>& y, int maxVal) {
+        EigenMatrix y_one_hot = EigenMatrix(y.gemmRows, maxVal);
         y_one_hot.setZero();
         for (int i = 0; i < y_one_hot.rows(); ++i) {
-            y_one_hot(i, y.at32(i)) = 1.0f;
+            int label = y.at32(y.gemmOffset + i);
+            y_one_hot(i, label) = 1.0f;
         }
         return y_one_hot;
     };
@@ -1022,13 +1081,14 @@ void test_softmax(int m, int n) {
 void test_one_hot(int m, int n) {
 
     n *= 8;
-    MlpMatrix mlp = MlpMatrix::Random(m * 8, n * 8, -5.f, 5.f);
-    EigenMatrix eig = _testEig::fromMlp(mlp);
+    MlpMatrix mlp = MlpMatrix(m * 8, n * 8);
+    EigenMatrix eig = EigenMatrix(m * 8, n * 8);
 
     MlpVector<__m256i> y = MlpVector<__m256i>::Random(m * 8, 0, n * 8 - 1);
+    int outputSize = n * 8; // ensure one_hot produces correct cols
     mlp.one_hot(y);
     EigenMatrix mlpCmp = _testEig::fromMlp(mlp);
-    EigenMatrix eigCmp = _testEig::one_hot(eig, y);
+    EigenMatrix eigCmp = _testEig::one_hot(y, outputSize);
 
     _testEig::cmpMat(eigCmp, mlpCmp);
 }
