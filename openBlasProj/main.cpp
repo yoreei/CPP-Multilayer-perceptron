@@ -24,6 +24,10 @@
 #include "sleef/sleef.h"
 #include <openblas/cblas.h>
 
+// define to compare my implementation with an eigen implementation (known to work) (slow)
+#undef COMPARE_MLP_WITH_EIGEN
+#define COMPARE_EVALEPOCH_MLP_WITH_EIGEN
+
 #include "simdUtil.h"
 
 using EigenMatrix = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
@@ -592,39 +596,34 @@ public:
     batchRows: this batch ends at endRow = startRow + batchSize
     */
     void forward(const MlpMatrix& batch) {
-
-        // vEigen
+#ifdef COMPARE_MLP_WITH_EIGEN
         EigenMatrix batchEig = _testEig::fromMlp(batch);
         EigenMatrix weight_1Eig = _testEig::fromMlp(weight_1);
         EigenRowVectorf bias_1Eig = _testEig::fromMlp(bias_1);
         EigenMatrix z1Eig = (batchEig * weight_1Eig).rowwise() + bias_1Eig;
-        // ^Eigen
-        z1.dup_rows(bias_1);
-        z1.gemm(batch, weight_1, 1.f, 1.f);
 
-        // vEigen
         EigenMatrix a1Eig = _testEig::relu(z1Eig);
-        // ^Eigen
-        a1 = z1;
-        relu(a1);
 
-        // vEigen
         EigenMatrix weight_2Eig = _testEig::fromMlp(weight_2);
         EigenRowVectorf bias_2Eig = _testEig::fromMlp(bias_2);
         EigenMatrix z2Eig = (a1Eig * weight_2Eig).rowwise() + bias_2Eig;
-        // ^Eigen
+
+        EigenMatrix a2Eig = _testEig::softmax(z2Eig);
+#endif // COMPARE_MLP_WITH_EIGEN
+        z1.dup_rows(bias_1);
+        z1.gemm(batch, weight_1, 1.f, 1.f);
+
+        a1 = z1;
+        relu(a1);
+
         //z2 = (a1 * weight_2) +(rowWise) bias_2;
         z2.dup_rows(bias_2);
         z2.gemm(a1, weight_2, 1.f, 1.f);
 
-        // vEigen
-        EigenMatrix a2Eig = _testEig::softmax(z2Eig);
-        // ^Eigen
         a2 = z2;
         softmax(a2);
 
-        // v CMP Eig
-
+#ifdef COMPARE_MLP_WITH_EIGEN
         EigenMatrix z1Cmp = _testEig::fromMlp(z1);
         EigenMatrix a1Cmp = _testEig::fromMlp(a1);
         EigenMatrix z2Cmp = _testEig::fromMlp(z2);
@@ -634,6 +633,7 @@ public:
         _testEig::cmpMat(a1Cmp, a1Eig);
         _testEig::cmpMat(z2Cmp, z2Eig);
         _testEig::cmpMat(a2Cmp, a2Eig);
+#endif // COMPARE_MLP_WITH_EIGEN
     }
 
     /*
@@ -643,17 +643,44 @@ public:
     batchRows: this batch ends at endRow = startRow + batchSize
     */
     void backward(const MlpMatrix& batchX, const MlpVector<__m256i>& batchY) {
-        // vEigen
+        float divM = 1.f / batchX.gemmRows;
+#ifdef COMPARE_MLP_WITH_EIGEN
         EigenMatrix y_one_hotEig = _testEig::one_hot(batchY, a2.cols); // a2.cols = outputSize
-        // ^Eigen
+
+        EigenMatrix a2Eig = _testEig::fromMlp(a2);
+        EigenMatrix dL_dz2Eig = a2Eig - y_one_hotEig;
+
+        EigenMatrix a1Eig = _testEig::fromMlp(a1);
+        EigenMatrix dL_dW2Eig = (a1Eig.transpose() * dL_dz2Eig) * divM;
+
+        EigenMatrix weight_2Eig = _testEig::fromMlp(weight_2);
+        weight_2Eig -= lr * dL_dW2Eig;
+
+        EigenMatrix dL_db2Eig = dL_dz2Eig.colwise().sum() * divM;
+
+        EigenMatrix bias_2Eig = _testEig::fromMlp(bias_2);
+        bias_2Eig -= lr * dL_db2Eig;
+
+        EigenMatrix dL_da1Eig = dL_dz2Eig * weight_2Eig.transpose();
+
+        EigenMatrix z1Eig = _testEig::fromMlp(z1);
+        EigenMatrix dL_dz1Eig = (dL_da1Eig.array() * (z1Eig.array() > 0).cast<real_t>()).matrix();
+
+        EigenMatrix batchXEig = _testEig::fromMlp(batchX);
+        EigenMatrix dL_dW1Eig = (batchXEig.transpose() * dL_dz1Eig) * divM;
+
+        EigenMatrix weight_1Eig = _testEig::fromMlp(weight_1);
+        weight_1Eig -= lr * dL_dW1Eig;
+
+        EigenMatrix dL_db1Eig = dL_dz1Eig.colwise().sum() * divM;
+
+        EigenMatrix bias_1Eig = _testEig::fromMlp(bias_1);
+        bias_1Eig -= lr * dL_db1Eig;
+#endif // COMPARE_MLP_WITH_EIGEN
         y_one_hot.one_hot(batchY);
 
         // 2. Compute gradient at output layer:
-        // vEigen
-        EigenMatrix a2Eig = _testEig::fromMlp(a2);
-        EigenMatrix dL_dz2Eig = a2Eig - y_one_hotEig;
-        // ^Eigen
-        //dL_dz2.noalias() = a2 - y_one_hot;
+        // dL_dz2 = a2 - y_one_hot;
         dL_dz2 = a2;
         cblas_saxpy(     // y = y + alpha * x
             dL_dz2.size32(), //n
@@ -664,20 +691,10 @@ public:
             1			//incy
         );
 
-        float divM = 1.f / batchX.gemmRows;
         // 3. Gradients for the second (output) layer:
-        // vEigen
-        EigenMatrix a1Eig = _testEig::fromMlp(a1);
-        EigenMatrix dL_dW2Eig = (a1Eig.transpose() * dL_dz2Eig) * divM;
-        // ^Eigen
-        //dL_dW2 = (a1.transpose() * dL_dz2) / m;
         dL_dW2.gemm<MlpATrans>(a1, dL_dz2, divM);
 
-        // vEigen
-        EigenMatrix weight_2Eig = _testEig::fromMlp(weight_2);
-        weight_2Eig -= lr * dL_dW2Eig;
-        // ^Eigen
-        //weight_2 -= lr * dL_dW2;
+        // weight_2 -= lr * dL_dW2
         cblas_saxpy( // y = y + alpha * x
             dL_dW2.size32(), // x.size
             -lr,			 // alpha
@@ -686,18 +703,11 @@ public:
             weight_2.data32(), // y
             1);				 // incy
 
-        // vEigen
-        EigenMatrix dL_db2Eig = dL_dz2Eig.colwise().sum() * divM;
-        // ^Eigen
-        //dL_db2 = dL_dz2.colwise().sum() / m;
+        // dL_db2 = dL_dz2.colwise().sum() * dimM
         MlpMatrix ones(1, dL_dz2.rows, 1.f);
         dL_db2.gemm(ones, dL_dz2, divM); // gemv could be faster
 
-        // vEigen
-        EigenMatrix bias_2Eig = _testEig::fromMlp(bias_2);
-        bias_2Eig -= lr * dL_db2Eig;
-        // ^Eigen
-        //bias_2 -= lr * dL_db2;
+        // bias_2 -= lr * dL_db2
         cblas_saxpy(		 // y = y + alpha * x
             dL_db2.size32(), // x.size
             -lr,			 // alpha
@@ -707,29 +717,15 @@ public:
             1);				 // incy
 
         // 4. Backpropagate to the hidden layer:
-        // vEigen
-        EigenMatrix dL_da1Eig = dL_dz2Eig * weight_2Eig.transpose();
-        // ^Eigen
-        //dL_da1 = dL_dz2 * weight_2.transpose();
         dL_da1.gemm<MlpBTrans>(dL_dz2, weight_2);
 
-        // vEigen
-        EigenMatrix z1Eig = _testEig::fromMlp(z1);
-        EigenMatrix dL_dz1Eig = (dL_da1Eig.array() * (z1Eig.array() > 0).cast<real_t>()).matrix();
-        // ^Eigen
-        //dL_dz1 = (dL_da1.array() * (z1.array() > 0).cast<real_t>()).matrix();
         dL_dz1 = dL_da1;
         dL_dz1.positive_mask(z1);
 
         // 5. Gradients for the first (hidden) layer:
-        EigenMatrix batchXEig = _testEig::fromMlp(batchX);
-        EigenMatrix dL_dW1Eig = (batchXEig.transpose() * dL_dz1Eig) * divM;
-        //dL_dW1 = (X.transpose() * dL_dz1) / m;
         dL_dW1.gemm<MlpATrans>(batchX, dL_dz1, divM);
 
-        EigenMatrix weight_1Eig = _testEig::fromMlp(weight_1);
-        weight_1Eig -= lr * dL_dW1Eig;
-        //weight_1 -= lr * dL_dW1;
+        // weight_1 -= lr * dL_dW1
         cblas_saxpy( // y = y + alpha * x
             dL_dW1.size32(), // x.size
             -lr,			 // alpha
@@ -739,14 +735,11 @@ public:
             1);				 // incy
 
 
-        //dL_db1 = dL_dz1.colwise().sum() / m;
-        EigenMatrix dL_db1Eig = dL_dz1Eig.colwise().sum() * divM;
+        // dL_db1 = dL_dz1.colwise().sum() * divM
         ones = MlpMatrix(1, dL_dz1.rows, 1.f);
         dL_db1.gemm(ones, dL_dz1, divM); // gemv could be faster
 
-        //bias_1 -= lr * dL_db1;
-        EigenMatrix bias_1Eig = _testEig::fromMlp(bias_1);
-        bias_1Eig -= lr * dL_db1Eig;
+        //bias_1 -= lr * dL_db1
         cblas_saxpy(		 // y = y + alpha * x
             dL_db1.size32(), // x.size
             -lr,			 // alpha
@@ -755,7 +748,7 @@ public:
             bias_1.data32(), // y
             1);				 // incy
 
-        // Compare Eigen and Mlp
+#ifdef COMPARE_MLP_WITH_EIGEN
         EigenMatrix y_one_hotCmp = _testEig::fromMlp(y_one_hot);
         _testEig::cmpMat(y_one_hotCmp, y_one_hotEig);
         EigenMatrix dL_dz2Cmp = _testEig::fromMlp(dL_dz2);
@@ -780,50 +773,56 @@ public:
         _testEig::cmpMat(dL_db1Cmp, dL_db1Eig);
         EigenMatrix bias_1Cmp = _testEig::fromMlp(bias_1);
         _testEig::cmpMat(bias_1Cmp, bias_1Eig);
-
+#endif
     }
 
     void evalEpoch(Dataset& trainData, int epoch) {
-        trainData.setGemmView(0, trainData.x.rows);
-        setBatchSize(trainData.x.rows);
-        forward(trainData.x);
-        setBatchSize(m);
+        float epsilon = 1.0e-6F;
+        trainData.setGemmView(0, trainData.x.rows); // max batch
+        setBatchSize(trainData.x.rows); // max batch
+        forward(trainData.x); // output is in `a2` member var
         __m256 epoch_loss = _mm256_setzero_ps();
         size_t outSize = a2.cols;
         const auto& y = trainData.y;
-        for (int i = 0; i < a2.rows; i += 8) {
+        int batchSize = a2.rows;
+        for (int row = 0; row < batchSize; row += 8) {
             __m256 probs = _mm256_set_ps(
-                *a2.data32(i, y.at32(i)),
-                *a2.data32(i + 1, y.at32(i + 1)),
-                *a2.data32(i + 2, y.at32(i + 2)),
-                *a2.data32(i + 3, y.at32(i + 3)),
-                *a2.data32(i + 4, y.at32(i + 4)),
-                *a2.data32(i + 5, y.at32(i + 5)),
-                *a2.data32(i + 6, y.at32(i + 6)),
-                *a2.data32(i + 7, y.at32(i + 7)));
+                *a2.data32(row,     y.at32(y.gemmOffset + row)),
+                *a2.data32(row + 1, y.at32(y.gemmOffset + row + 1)),
+                *a2.data32(row + 2, y.at32(y.gemmOffset + row + 2)),
+                *a2.data32(row + 3, y.at32(y.gemmOffset + row + 3)),
+                *a2.data32(row + 4, y.at32(y.gemmOffset + row + 4)),
+                *a2.data32(row + 5, y.at32(y.gemmOffset + row + 5)),
+                *a2.data32(row + 6, y.at32(y.gemmOffset + row + 6)),
+                *a2.data32(row + 7, y.at32(y.gemmOffset + row + 7)));
+            probs = _mm256_add_ps(probs, _mm256_set1_ps(epsilon)); // against log(0)
             probs = _mm256_log_ps(probs);
             epoch_loss = _mm256_add_ps(epoch_loss, probs);
         }
 
         float epoch_loss_sum = sum256f(epoch_loss);
-        epoch_loss_sum /= -int(a2.rows);
+        epoch_loss_sum /= -int(batchSize);
         losses.push_back(epoch_loss_sum);
 
         std::cout << (epoch + 1) << "\t" << epoch_loss_sum << std::endl;
 
 
 
-        //vEigen:
-        //double epoch_lossEig = 0.0;
-        //for (int i = 0; i < trainData.labels.size(); ++i) {
-        //    // Avoid log(0) by adding a small epsilon if needed.
-        //    float prob = full_output(i, trainData.labels(i));
-        //    epoch_loss += std::log(prob);
-        //}
-        //epoch_loss = -epoch_loss / trainData.labels.size();
-        //losses.push_back(epoch_loss);
-        //std::cout << (epoch + 1) << "\t" << epoch_loss << std::endl;
-        // ^Eigen
+#ifdef COMPARE_EVALEPOCH_MLP_WITH_EIGEN
+        double epoch_lossEig = 0.0;
+        for (size_t row = 0; row < batchSize; ++row) {
+            float prob = *a2.data32(row, trainData.y.at32(trainData.y.gemmOffset + row));
+            prob += epsilon; // against log(0)
+            epoch_lossEig += std::log(prob);
+        }
+        epoch_lossEig /= -batchSize;
+        float lastLoss = losses.back();
+        if (std::fabsf(epoch_lossEig - lastLoss) > 0.001f) {
+            throw std::runtime_error("wrong loss");
+        }
+#endif // COMPARE_MLP_WITH_EIGEN
+
+        setBatchSize(m);
     }
 
     void train(Dataset& trainData, int epochs = 10) {
@@ -860,7 +859,7 @@ public:
             predictions.at32(row) = maxIndex;
         }
 
-        // vEigen
+#ifdef COMPARE_MLP_WITH_EIGEN
         EigenMatrix a2Eig = _testEig::fromMlp(a2);
         for (int i = 0; i < a2Eig.rows(); ++i) {
             int maxIndex;
@@ -870,7 +869,7 @@ public:
                 std::cerr << "wrong predict\n";
             }
         }
-        // ^Eigen
+#endif // COMPARE_MLP_WITH_EIGEN
 
 
         return predictions;
@@ -960,7 +959,7 @@ namespace _testEig {
 
     void cmpMat(const EigenMatrix& a, const EigenMatrix& b) {
         if (a.isApprox(b)) {
-            std::cout << "Test passed: matrices are equal." << std::endl;
+            //std::cout << "Test passed: matrices are equal." << std::endl;
         }
         else {
             std::cerr << "Test failed: matrices differ." << std::endl;
@@ -1144,6 +1143,7 @@ void testRun() {
 }
 
 int main() {
+    enableFpExcept();
     testRun();
     bool HALVEDATA = false;
     bool DEBUGSTATISTICS = false;
@@ -1163,7 +1163,8 @@ int main() {
 
     Time begin = getTime();
 
-    mlp.train(trainData, 1);
+    int epochs = 80;
+    mlp.train(trainData, epochs);
     MlpVector<__m256i> predictions = mlp.predict(testData.x);
 
     //double accuracy = (predictions.array() == testData.labels.array()).cast<double>().mean();
