@@ -370,11 +370,13 @@ int main() {
 	size_t hiddenSize = 128;
 	const auto [_, maxLabel] = std::minmax_element(trainData.labels.begin(), trainData.labels.end());
 	size_t outputSize = *maxLabel + 1;
-	MLP mlp{ inputSize, hiddenSize, outputSize, 60, 0.01f };
+	int miniBatchSize = 128;
+	MLP mlp{ inputSize, hiddenSize, outputSize, miniBatchSize, 0.01f };
 
 	Time begin = getTime();
 
-	mlp.train(trainData, 8);
+	int epochs = 10;
+	mlp.train(trainData, epochs);
 	MlpVectori predictions = mlp.predict(testData.data);
 	double accuracy = (predictions.array() == testData.labels.array()).cast<double>().mean();
 	std::cout << "Test Accuracy: " << accuracy << std::endl;

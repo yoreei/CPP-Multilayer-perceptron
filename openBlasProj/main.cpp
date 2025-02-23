@@ -26,7 +26,8 @@
 
 // define to compare my implementation with an eigen implementation (known to work) (slow)
 #undef COMPARE_MLP_WITH_EIGEN
-#define COMPARE_EVALEPOCH_MLP_WITH_EIGEN
+// compute loss function (slows down epochs)
+#undef EVAL_EPOCH
 
 #include "simdUtil.h"
 
@@ -808,7 +809,7 @@ public:
 
 
 
-#ifdef COMPARE_EVALEPOCH_MLP_WITH_EIGEN
+#ifdef COMPARE_MLP_WITH_EIGEN
         double epoch_lossEig = 0.0;
         for (size_t row = 0; row < batchSize; ++row) {
             float prob = *a2.data32(row, trainData.y.at32(trainData.y.gemmOffset + row));
@@ -842,7 +843,9 @@ public:
             Seconds elapsed = getTime() - begin;
             std::cout << "epoch time: " << elapsed << std::endl;
 
+#ifdef EVAL_EPOCH
             evalEpoch(trainData, epoch);
+#endif
         }
     }
 
@@ -1159,11 +1162,12 @@ int main() {
     size_t hiddenSize = 128;
     const auto maxLabel = std::max_element(trainData.y.data32(), trainData.y.end32());
     size_t outputSize = *maxLabel + 1;
-    MLP mlp{ inputSize, hiddenSize, outputSize, 64, 0.01f };
+    int miniBatchSize = 128;
+    MLP mlp{ inputSize, hiddenSize, outputSize, miniBatchSize, 0.01f };
 
     Time begin = getTime();
 
-    int epochs = 80;
+    int epochs = 10;
     mlp.train(trainData, epochs);
     MlpVector<__m256i> predictions = mlp.predict(testData.x);
 
