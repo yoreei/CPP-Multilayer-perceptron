@@ -4,19 +4,6 @@
 #include <ranges>
 #include <stdexcept>
 
-void enableFpExcept() {
-#if defined(_MSC_VER) && !defined(__clang__)
-    // Clear the exception masks for division by zero, invalid operation, and overflow.
-    // This means these exceptions will be raised.
-
-    // _EM_INEXACT
-    // _EM_UNERFLOW
-    // _EM_DENORMAL
-    unsigned int current;
-    _controlfp_s(&current, 0, 0);
-    _controlfp_s(&current, current & ~(_EM_INVALID | _EM_ZERODIVIDE | _EM_OVERFLOW), _MCW_EM);
-#endif
-}
 
 inline float sum256f(__m256 vec) {
     __m128 lo = _mm256_castps256_ps128(vec);
