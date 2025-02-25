@@ -36,8 +36,8 @@ T* cuAllocCpyFromHost(const std::vector<T>& h_vector) {
 
 }
 
-/* Copy data from device to host, then free the device memory */
-void cpyFreeFromDevice(std::vector<float>& h_vector, float* d_array) {
+/* Copy data from device to host */
+void cuCpyFromDevice(std::vector<float>& h_vector, float* d_array) {
     cudaError_t err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
         printf("Kernel execution failed: %s\n", cudaGetErrorString(err));
@@ -46,11 +46,10 @@ void cpyFreeFromDevice(std::vector<float>& h_vector, float* d_array) {
 
     size_t bytes = sizeof(float) * h_vector.size();
     CHECK_CUDA(cudaMemcpy(h_vector.data(), d_array, bytes, cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaFree(d_array));
 }
 
 /* Wait for active kernels to complete. Report any errors. Returns time of execution derived from parameters */
-double hostJoinDevice(cudaEvent_t& start, cudaEvent_t& stop) {
+double cuHostJoinDevice(cudaEvent_t& start, cudaEvent_t& stop) {
     cudaEventRecord(stop, 0);
     cudaError_t err = cudaEventSynchronize(stop);
     if (err != cudaSuccess) {
@@ -67,7 +66,7 @@ double hostJoinDevice(cudaEvent_t& start, cudaEvent_t& stop) {
     return milliseconds / 1000;
 }
 
-void startCudaTimer(cudaEvent_t& start, cudaEvent_t& stop) {
+void cuStartTimer(cudaEvent_t& start, cudaEvent_t& stop) {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <iterator>
 using Time = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
 Time getTime() {
@@ -42,3 +43,35 @@ void enableFpExcept() {
 #endif
 }
 
+template <typename Iterator>
+void randSeq(Iterator begin, Iterator end, std::iter_value_t<Iterator> Min = 0, std::iter_value_t<Iterator> rMax = 1) {
+    using T = std::iter_value_t<Iterator>;
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+
+    // Static Distribution Selection
+    using Distribution = std::conditional_t<
+        std::is_integral_v<T>, std::uniform_int_distribution<T>,
+        std::conditional_t<
+        std::is_floating_point_v<T>, std::uniform_real_distribution<T>,
+        void>>;
+
+
+    static_assert(!std::is_same_v<Distribution<T>, void>,
+        "T must be an integral or floating-point type");
+
+    Distribution<T> dist(rMin, rMax);
+    for (float& val : randomFloats) {
+        val = dist(gen);
+    }
+
+    return _mm256_load_ps(randomFloats.data());
+}
+
+void seqRan256(__m256* begin, const __m256* end, float rMin = 0.f, float rMax = 1.f) {
+    while (begin != end) {
+        *begin = rand256ps(rMin, rMax);
+        ++begin;
+    }
+}
+}

@@ -5,152 +5,22 @@
 #include <iomanip>
 #include <random>
 #include <immintrin.h>
+#include <numeric>
+#include <algorithm>
+#include <cstdint>
+#include <ranges>
+#include <type_traits>
+#include <cassert>
 
 #include "device_launch_parameters.h"
 #include "cuda_runtime.h"
 #include <cublas_v2.h>
+#include <thrust/device_ptr.h>
+#include <thrust/extrema.h>
 
 #include "common/cuUtil.h"
 #include "common/cppUtil.h"
 #include "common/simdUtil.h"
-
-/*
-CUP = Cuda (multilayer) Perceptron
-*/
-
-// BLOCKDIM [1 to 1024]: Number of threads per block in the CUDA kernel
-constexpr size_t BLOCK_DIM = 256;
-
-
-int main(int argc, char* argv[]) {
-    Time memTime0 = getTime();
-    float* d_buffer = copyFromHost(h_buffer);
-    Seconds memElapsed = getTime() - memTime0;
-
-    size_t blockSize = std::min(totalPixels, BLOCK_DIM);
-    size_t pixelDim = (totalPixels + blockSize - 1) / blockSize;
-
-    kernel::compute << <pixelDim, blockSize >> > (d_buffer, d_lights, M, N);
-    std::cerr << "memory transfer time:  " << memElapsed << " seconds.\n";
-
-    copyFromDeviceAndFree(h_buffer, d_buffer);
-    CHECK_CUDA(cudaFree(zzzzzzzzzzz));
-    cudaDeviceReset();
-
-    return 0;
-}
-
-void ::relu(float* begin, size_t size) {
-    __m256 zero = _mm256_setzero_ps();
-    for (size_t i = 0; i < x.size256(); ++i) {
-        x.data256[i] = _mm256_max_ps(x.data256[i], zero);
-    }
-}
-
-__global__ void relu(float* data, int size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        data[idx] = data[idx] > 0 ? data[idx] : 0;
-}
-
-int main() {
-    // Dimensions: input layer, hidden layer, output layer, and batch size
-    int inputSize = 4, hiddenSize = 5, outputSize = 3, batchSize = 2;
-
-    // Sample input (batchSize x inputSize)
-    float h_input[batchSize * inputSize] = { 1, 2, 3, 4,   // Sample 1
-                                              5, 6, 7, 8 };  // Sample 2
-    // Allocate weights for input->hidden and hidden->output layers
-    float h_W1[inputSize * hiddenSize];
-    float h_W2[hiddenSize * outputSize];
-
-    // Initialize weights randomly
-    srand(time(NULL));
-    for (int i = 0; i < inputSize * hiddenSize; i++)
-        h_W1[i] = (float)rand() / RAND_MAX;
-    for (int i = 0; i < hiddenSize * outputSize; i++)
-        h_W2[i] = (float)rand() / RAND_MAX;
-
-    // Device pointers
-    float* d_input, * d_W1, * d_W2, * d_hidden, * d_output;
-    CHECK_CUDA(cudaMalloc((void**)&d_input, batchSize * inputSize * sizeof(float)));
-    CHECK_CUDA(cudaMalloc((void**)&d_W1, inputSize * hiddenSize * sizeof(float)));
-    CHECK_CUDA(cudaMalloc((void**)&d_W2, hiddenSize * outputSize * sizeof(float)));
-    CHECK_CUDA(cudaMalloc((void**)&d_hidden, batchSize * hiddenSize * sizeof(float)));
-    CHECK_CUDA(cudaMalloc((void**)&d_output, batchSize * outputSize * sizeof(float)));
-
-    // Copy data to device
-    CHECK_CUDA(cudaMemcpy(d_input, h_input, batchSize * inputSize * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_W1, h_W1, inputSize * hiddenSize * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_W2, h_W2, hiddenSize * outputSize * sizeof(float), cudaMemcpyHostToDevice));
-
-    // Create cuBLAS handle
-    cublasHandle_t handle;
-    CHECK_CUBLAS(cublasCreate(&handle));
-
-    float alpha = 1.0f, beta = 0.0f;
-    // Forward pass: Hidden layer computation (d_hidden = d_input * d_W1)
-    // Note: cuBLAS assumes column-major storage. Adjust transpose flags if needed.
-    CHECK_CUBLAS(cublasSgemm(handle,
-        CUBLAS_OP_N, CUBLAS_OP_N,
-        hiddenSize,    // m
-        batchSize,     // n
-        inputSize,     // k
-        &alpha,
-        d_W1, hiddenSize,     // A: dimensions (hiddenSize x inputSize)
-        d_input, inputSize,   // B: dimensions (inputSize x batchSize)
-        &beta,
-        d_hidden, hiddenSize));  // C: dimensions (hiddenSize x batchSize)
-
-    // Apply ReLU activation on the hidden layer
-    int numElements = batchSize * hiddenSize;
-    int threads = 256;
-    int blocks = (numElements + threads - 1) / threads;
-    relu << <blocks, threads >> > (d_hidden, numElements);
-    cudaDeviceSynchronize();
-
-    // Forward pass: Output layer computation (d_output = d_hidden * d_W2)
-    CHECK_CUBLAS(cublasSgemm(handle,
-        CUBLAS_OP_N, CUBLAS_OP_N,
-        outputSize,   // m
-        batchSize,    // n
-        hiddenSize,   // k
-        &alpha,
-        d_W2, outputSize,   // A: dimensions (outputSize x hiddenSize)
-        d_hidden, hiddenSize,   // B: dimensions (hiddenSize x batchSize)
-        &beta,
-        d_output, outputSize));  // C: dimensions (outputSize x batchSize)
-
-    // Copy output back to host and print
-    float h_output[batchSize * outputSize];
-    CHECK_CUDA(cudaMemcpy(h_output, d_output, batchSize * outputSize * sizeof(float), cudaMemcpyDeviceToHost));
-
-    printf("MLP Output:\n");
-    for (int i = 0; i < batchSize; i++) {
-        for (int j = 0; j < outputSize; j++) {
-            printf("%f ", h_output[i * outputSize + j]);
-        }
-        printf("\n");
-    }
-
-    // Cleanup resources
-    cublasDestroy(handle);
-    cudaFree(d_input);
-    cudaFree(d_W1);
-    cudaFree(d_W2);
-    cudaFree(d_hidden);
-    cudaFree(d_output);
-
-    return 0;
-}
-
-
-
-
-
-
-
-
 
 #define _SILENCE_CXX23_DENORM_DEPRECATION_WARNING
 #define _SILENCE_ALL_CXX23_DEPRECATION_WARNINGS
@@ -158,43 +28,36 @@ int main() {
 #undef _SILENCE_CXX23_DENORM_DEPRECATION_WARNING
 #undef _SILENCE_ALL_CXX23_DEPRECATION_WARNINGS
 
-
-#include <numeric>
-#include <algorithm>
-#include <cstdint>
-#include <ranges>
-#include <type_traits>
-#include <immintrin.h>
-#include <cassert>
-
-
 #define SLEEF_STATIC_LIBS
 #include "sleef/sleef.h"
 #include <openblas/cblas.h>
 
 // define to compare my implementation with an eigen implementation (known to work) (slow)
-#undef COMPARE_MLP_WITH_EIGEN
+#define COMPARE_MLP_WITH_EIGEN
 // compute loss function (slows down epochs)
-#undef EVAL_EPOCH
+#define EVAL_EPOCH
 
+/*
+CUP = Cuda (multilayer) Perceptron
+*/
 
 using EigenMatrix = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 using EigenRowVectorf = Eigen::RowVector<float, Eigen::Dynamic>;
 using EigenVectorf = Eigen::Vector<float, Eigen::Dynamic>;
+// BLOCKDIM [1 to 1024]: Number of threads per block in the CUDA kernel
+constexpr size_t BLOCK_DIM = 256;
+
+__global__ void relu(float* data, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size)
+        data[idx] = data[idx] > 0 ? data[idx] : 0;
+}
 
 uint32_t swapEndian(uint32_t val) {
     return ((val >> 24) & 0xff) |
         ((val << 8) & 0xff0000) |
         ((val >> 8) & 0xff00) |
         ((val << 24) & 0xff000000);
-}
-
-void ranArr(float* arr, int size, float minVal, float maxVal) {
-    std::mt19937 rng(std::random_device{}());
-    std::uniform_real_distribution<float> dist(minVal, maxVal);
-    for (size_t i = 0; i < size; ++i) {
-        arr[i] = dist(rng);
-    }
 }
 
 enum CUPTransMask {
@@ -207,21 +70,41 @@ enum CUPTransMask {
 template <typename T>
 class CUPRAII {
 public:
-    void CUPRAII(const std::vector<T>& cpuVec) : size(cpuVec.size()) {
-        if (ptr) {
-            free(ptr);
-        }
+    CUPRAII(const std::vector<T>& cpuVec) : size(cpuVec.size()) {
+        if (ptr) { free(ptr); }
         ptr = cuAllocCpyFromHost(cpuVec);
     }
+
+    CUPRAII(int size) : size(size) {
+        if (ptr) { free(ptr); }
+        std::vector<T>& cpuVec(size, 0xBADBAD);
+        ptr = cuAllocCpyFromHost(cpuVec);
+    }
+
     __host__ __device__
-        ~RAII() {
+        ~CUPRAII() {
 #ifdef __CUDA_ARCH__
         // do not free
 #else
         free();
 #endif
-
     }
+    CUPRAII(const CUPRAII& rhs) {
+        if (this->size != rhs.size) {
+            *this = CUPRAII(rhs.size);
+            std::cout << "reallocating CUPRAII\n";
+        }
+        CUDA_CHECK(cudaMemcpy(ptr, rhs.ptr, sizeof(T) * size, cudaMemcpyDeviceToDevice));
+    }
+    CUPRAII& operator=(const CUPRAII& rhs) {
+        if (this->size != rhs.size) {
+            *this = CUPRAII(rhs.size);
+            std::cout << "reallocating CUPRAII\n";
+        }
+        CUDA_CHECK(cudaMemcpy(ptr, rhs.ptr, sizeof(T) * size, cudaMemcpyDeviceToDevice));
+        return *this;
+    }
+
     __host__ void free() {
         CHECK_CUDA(cudaFree(ptr));
     }
@@ -233,19 +116,27 @@ public:
 template <typename T>
 struct CUPMatrix {
     CUPMatrix() = default;
-    __host__ CUPMatrix(const std::vector<T>& cpuVec, int rows, int cols) :
-        rows(rows),
-        cols(cols),
-        raii(cpuVec), {
+    __host__ CUPMatrix(const std::vector<T>& cpuVec, int rows, int cols) : rows(rows), cols(cols), raii(cpuVec), {
         assert(rows * cols == cpuVec.size());
-
     }
-    size_t get(int row, int col) {
+        __host__ CUPMatrix(int rows, int cols) : rows(rows), cols(cols), raii(rows* cols), {}
+
+        size_t get(int row, int col) {
         assert(row < rows && col < cols);
         return row * cols + col;
     }
     T* end() {
         return data + rows * cols;
+    }
+    std::vector<T> cpyFromDevice() const {
+        std::vector<T> cpuVec(rows * cols, 0xBADBAD);
+        cuCpyFromDevice(cpuVec, data);
+        return cpuVec;
+    }
+
+    int size() {
+        assert(rows * cols <= raii.size);
+        return rows * cols;
     }
 
     void setView(int rowOffset, int rowSpan) {
@@ -258,13 +149,18 @@ struct CUPMatrix {
 
     }
 
+    int raiiRows() const {
+        assert(raii.size % cols == 0);
+        return raii.size() / cols;
+    }
+
     template <CUPTransMask transMask = CUPNoneTrans>
     void gemm(const CUPMatrix<T>& aMatrix, const CUPMatrix<T>& bMatrix, float alpha = 1.f, float beta = 0.f);
     void positive_mask(const CUPMatrix<T>& mask);
     void dup_rows(const CUPMatrix<T>& row);
     void softmax();
 
-    T* data = nullptr;
+    T* data = nullptr; // device pointer!
     int rows = 0;
     int cols = 0;
 private:
@@ -275,7 +171,7 @@ private:
 // C = αA ∗ B ∗ +βC
 template <typename T>
 template <CUPTransMask transMask>
-void CUPMatrix<T>::gemm(const CUPMatrix& aMatrix, const CUPMatrix& bMatrix, float alpha = 1.f, float beta = 0.f) {
+void CUPMatrix<T>::gemm(const CUPMatrix& aMatrix, const CUPMatrix& bMatrix, float alpha, float beta) {
     float* C = data;
     const float* A = aMatrix.data;
     const float* B = bMatrix.data;
@@ -372,8 +268,8 @@ template <typename T>
 void CUPMatrix<T>::dup_rows(const CUPMatrix<T>& row) {
     // O(log n) memcpy calls
 
-    if (row.size32() != cols) {
-        int _rowSize = row.size32();
+    if (row.size() != cols) {
+        int _rowSize = row.size();
         throw std::runtime_error("wrong size " + _rowSize);
     }
 
@@ -424,125 +320,63 @@ void CUPMatrix<T>::softmax() {
 }
 
 
-struct Dataset {
-    // Constructor that reads MNIST data and label files.
-    Dataset(const std::string& dataFile, const std::string& labelFile) {
-        std::cout << "loading " << dataFile << std::endl;
-        std::ifstream dataIfstream(dataFile, std::ios::binary);
-        if (!dataIfstream) {
-            std::cerr << "Unable to open file: " << dataFile << std::endl;
-            exit(-1);
-        }
-
-        uint32_t magicNumber = 0;
-        uint32_t numImages = 0;
-        // Read header: magic number, number of images, rows, and columns.
-        dataIfstream.read(reinterpret_cast<char*>(&magicNumber), sizeof(magicNumber));
-        dataIfstream.read(reinterpret_cast<char*>(&numImages), sizeof(numImages));
-        dataIfstream.read(reinterpret_cast<char*>(&imageRows), sizeof(imageRows));
-        dataIfstream.read(reinterpret_cast<char*>(&imageCols), sizeof(imageCols));
-
-        magicNumber = swapEndian(magicNumber);
-        numImages = swapEndian(numImages);
-        imageRows = swapEndian(imageRows);
-        imageCols = swapEndian(imageCols);
-
-        std::cout << "Magic Number: " << magicNumber << "\n";
-        std::cout << "Number of Images in file: " << numImages << "\n";
-        numImages = (numImages / 8) * 8;
-        std::cout << "Number of Images read: " << numImages << "\n";
-        std::cout << "Rows: " << imageRows << "\n";
-        std::cout << "Columns: " << imageCols << "\n";
-
-        if ((imageRows * imageCols) % 8 != 0) {
-            throw std::runtime_error("numCol must be divisible by 8");
-        }
-
-        //Read data:
-        std::vector<float> cpuData{numImages * imageRows * imageCols, 0xBADBAD};
-        for (int i = 0; i < cpuData.size(); ++i) {
-            uint8_t byte;
-            dataIfstream.read(reinterpret_cast<char*>(&byte), sizeof(byte));
-            if (!dataIfstream) {
-                throw std::runtime_error("error reading pos " + i);
-            }
-
-            cpuData[i] = float(byte) / 255.f;
-        }
-        CUPMatrix<float> x{ cpuData, numImages, imageRows * imageCols };
-
-        // labels
-        std::cout << "loading " << labelFile << std::endl;
-        std::ifstream labelIfstream(labelFile, std::ios::binary);
-        if (!labelIfstream) {
-            std::cerr << "Unable to open file: " << labelFile << std::endl;
-            exit(-1);
-        }
-
-        uint32_t numLabels = 0;
-        labelIfstream.read(reinterpret_cast<char*>(&magicNumber), sizeof(magicNumber));
-        labelIfstream.read(reinterpret_cast<char*>(&numLabels), sizeof(numLabels));
-        magicNumber = swapEndian(magicNumber);
-        numLabels = swapEndian(numLabels);
-
-        std::cout << "Magic Number: " << magicNumber << "\n";
-        std::cout << "Number of Labels in file: " << numLabels << "\n";
-        numLabels = (numLabels / 8) * 8;
-        std::cout << "Number of Labels read: " << numLabels << "\n";
-
-        if (numLabels != numImages) {
-            std::cerr << "numLabels != numImages" << std::endl;
-            exit(-1);
-        }
-
-        y = MlpVector<__m256i>(numLabels);
-        for (size_t i = 0; i < y.size32(); ++i) {
-            char byte;
-            labelIfstream.read(&byte, sizeof(char));
-            if (!dataIfstream) {
-                throw std::runtime_error("error reading bytes");
-            }
-            y.at32(i) = static_cast<int>(byte);
-        }
+template <typename T>
+CUPMatrix<T> readIdxXubyte(const std::string& dataFile) {
+    // T == float: we are reading data
+    // T == int: we are reading labels
+    constexpr int numDim = std::is_same_v(T, int) ? 1 : 3;
+    std::cout << "loading " << dataFile << std::endl;
+    std::ifstream dataIfstream(dataFile, std::ios::binary);
+    if (!dataIfstream) {
+        std::cerr << "Unable to open file: " << dataFile << std::endl;
+        exit(-1);
     }
 
+    // Read header: magic number, number of images, rows, and columns.
+    uint32_t magicNumber = 0;
+    dataIfstream.read(reinterpret_cast<char*>(&magicNumber), sizeof(magicNumber));
+    magicNumber = swapEndian(magicNumber);
+    std::cout << "Magic Number: " << magicNumber << "\n";
+
+    std::array<T, numDim> dim;
+    int dims[numDim] = { 0, 0, 0 };
+    for (int i = 0; i < numDim, ++i) {
+        dataIfstream.read(reinterpret_cast<char*>(&(dims[i])), sizeof(numImages));
+        dims[i] = swapEndian(dims[i]);
+        std::cout << "Dim" << i << ": " << dims[i] << "\n";
+    }
+
+    // Read data:
+    int totalElements = std::accumulate(dim.cbegin(), dim.cend(), 1, [](int a, const int& b) {return a * b; });
+    std::vector<T> cpuData(totalElements, 0xBADBAD);
+    for (int i = 0; i < cpuData.size(); ++i) {
+        uint8_t byte;
+        dataIfstream.read(reinterpret_cast<char*>(&byte), sizeof(byte));
+        if (!dataIfstream) {
+            throw std::runtime_error("error reading pos " + i);
+        }
+
+
+        cpuData[i] = T(byte);
+        if constexpr (std::is_same_v<T, float>) {
+            cpuData[i] /= 255.f;
+        }
+    }
 
     // Print out statistics and show the 40th image.
-    void statistics() const {
-        std::cout << "Data dim [" << x.rows << ", " << x.cols << "]" << std::endl;
-        const auto [minVal, maxVal] = std::minmax_element(x.data32(), x.end32());
-        float sumVal = std::accumulate(x.data32(), x.end32(), 0.f);
-        std::cout << "Data: min = " << *minVal << ", max = " << *maxVal << ", sum = " << sumVal << std::endl;
 
+    return CUPMatrix<T>{ cpuData, totalElements };
 
-        std::cout << "Printing 40th image:" << std::endl;
-        for (size_t y = 0; y < imageRows; ++y) {
-            for (size_t x = 0; x < imageCols; ++x) {
-                std::cout << charFromFloat(getPixel(39, y, x));
-            }
-            std::cout << std::endl;
-        }
-        std::cout << "Label: " << y.at32(39) << std::endl;
-    }
-
-    // Access a pixel value from the flattened image.
-    const float& getPixel(uint64_t imgId, uint64_t yPos, uint64_t xPos) const {
-        return *(x.data32() + imgId * x.rows * x.cols + yPos * x.cols + xPos);
-    }
-
-    uint32_t imageRows = 0, imageCols = 0; //< must be unit32_t to read from file properly!!!
-    __host__ CUPRAII<float> raiiX;
-    __host__ CUPRAII<int> raiiY;
-    CUPMatrix<float> x;  // Data matrix (numImages x (numRows*numCols))
-    CUPMatrix<int> y;        // Label vector (numImages x 1)
-};
+}
 
 namespace _testEig {
-    EigenMatrix fromMlp(const MlpMatrix& mlp);
-    EigenRowVectorf fromMlp(const MlpVector<__m256>& mlp);
+    // EigenType: EigenMatrix or EigenRowVectorF
+    template <typename EigenType>
+    EigenMatrix fromCUPMatrix(const CUPMatrix<float>& cup);
+    EigenRowVectorf fromCUPVector(const CUPMatrix<float>& cup);
     EigenMatrix relu(const EigenMatrix& x);
     EigenMatrix softmax(const EigenMatrix& x);
-    EigenMatrix one_hot(const MlpVector<__m256i>& y, int maxVal);
+    EigenMatrix one_hot(const EigenMatrix& y, int maxVal);
     EigenMatrix dup_rows(const EigenMatrix& x, const EigenRowVectorf& y);
     EigenMatrix positive_mask(const EigenMatrix& data, const EigenMatrix& mask);
     void cmpMat(const EigenMatrix& a, const EigenMatrix& b);
@@ -551,58 +385,50 @@ namespace _testEig {
 class MLP {
 
 public:
+    MLP(CUPMatrix<float>& x, CUPMatrix<int>& y, size_t hiddenSize, int batchSize, float lr, int epochs) {
+        size_t inputSize = x.cols;
+        auto d_begin = thrust::device_pointer_cast(y.data);
+        auto d_end = thrust::device_pointer_cast(y.end());
+        auto max_iter = thrust::max_element(d_begin, d_end);
+        size_t outputSize = *max_iter + 1;
 
+        std::vector<float>initVec(inputSize * hiddenSize, 0xBADBAD);
+        randSeq(initVec.begin(), initVec.end(), -0.01f, 0.01f);
+        weight_1 = CUPMatrix<float>(initVec, inputSize, hiddenSize);
 
-    /* arg m: mini-batch size */
-    MLP(size_t inputSize, size_t hiddenSize, size_t outputSize, int m, float lr) : m(m), lr(lr) {
-        outputSize = pad8(outputSize);
+        initVec = std::vector<float>(hiddenSize, 0xBADBAD);
+        randSeq(initVec.begin(), initVec.end(), 0.f, 1.f);
+        bias_1 = CUPMatrix<float>(initVec, hiddenSize, 1);
 
-        // Initialize weight_1: values in [-1,1] scaled to [-0.01, 0.01]
+        initVec = std::vector<float>(hiddenSize * outputSize, 0xBADBAD);
+        randSeq(initVec.begin(), initVec.end(), -0.01f, 0.01f);
+        weight_2 = CUPMatrix<float>(initVec, hiddenSize, outputSize);
 
-        weight_1 = MlpMatrix(inputSize, hiddenSize);
-        seqRan256(weight_1.data256.data(), weight_1.end256(), -0.01f, 0.01f);
+        initVec = std::vector<float>(outputSize, 0xBADBAD);
+        randSeq(initVec.begin(), initVec.end(), 0.f, 1.f);
+        bias_2 = CUPMatrix<float>(initVec, outputSize, 1);
 
-        // Initialize bias_1: values in [0,1)
-        bias_1 = MlpVector<__m256>(hiddenSize);
-        seqRan256(bias_1.data256(), bias_1.end256(), 0.f, 1.f);
+        std::cout << "Epoch\tLoss\n";
+        // slicing totalRows to align with batchSize (no partial batches)
+        int totalRows = batchSize * (x.raiiRows() / batchSize);
+        for (int epoch = 0; epoch < epochs; ++epoch) {
 
-        // Initialize weight_2: values in [-0.01, 0.01]
-        weight_2 = MlpMatrix(hiddenSize, outputSize);
-        seqRan256(weight_2.data256.data(), weight_2.end256(), -0.01f, 0.01f);
+            Time begin = getTime();
+            for (int i = 0; i < totalRows; i += x.rows) {
+                x.setView(i, batchSize);
+                y.setView(i, batchSize);
+                forward(x);
+                backward(x, y, lr);
+            }
+            Seconds elapsed = getTime() - begin;
+            std::cout << "epoch time: " << elapsed << std::endl;
 
-        // Initialize bias_2: values in [0,1)
-        bias_2 = MlpVector<__m256>(outputSize);
-        seqRan256(bias_2.data256(), bias_2.end256(), 0.f, 1.f);
-
-        setBatchSize(m);
-
-        dL_dW2 = MlpMatrix(hiddenSize, outputSize);
-        dL_db2 = MlpMatrix(1, outputSize);
-        dL_dW1 = MlpMatrix(inputSize, hiddenSize);
-        dL_db1 = MlpMatrix(1, hiddenSize);
-
-        y_one_hot = MlpMatrix(m, outputSize); // dl_da2
-
-        //std::cout << "weight_1 (first 5 rows):\n" << weight_1.topRows(5) << "\n\n";
-        //std::cout << "bias_1:\n" << bias_1 << "\n\n";
-        //std::cout << "weight_2 (first 5 rows):\n" << weight_2.topRows(5) << "\n\n";
-        //std::cout << "reluWeight_2:\n" << relu(weight_2.topRows(5)) << "\n\n";
-        //std::cout << "bias_2:\n" << bias_2 << "\n";
-
-    }
-
-    void setBatchSize(int m) {
-        const int& hiddenSize = bias_1.size32();
-        const int& outputSize = bias_2.size32();
-        z1 = MlpMatrix(m, hiddenSize);
-        a1 = MlpMatrix(m, hiddenSize);
-        z2 = MlpMatrix(m, outputSize);
-
-        dL_da1 = MlpMatrix(m, hiddenSize);
-        dL_dz1 = MlpMatrix(m, hiddenSize);
-        dL_dz2 = MlpMatrix(m, outputSize);
-
-        a2 = MlpMatrix(m, outputSize);
+#ifdef EVAL_EPOCH
+            x.setView(0, x.raiiRows());
+            y.setView(0, y.raiiRows());
+            evalEpoch(x, epoch);
+#endif
+        }
     }
 
     /*
@@ -610,26 +436,28 @@ public:
     startRow: this batch begins at startRow
     batchRows: this batch ends at endRow = startRow + batchSize
     */
-    void forward(const MlpMatrix& batch) {
+    void forward(const CUPMatrix<float>& x) {
 #ifdef COMPARE_MLP_WITH_EIGEN
-        EigenMatrix batchEig = _testEig::fromMlp(batch);
-        EigenMatrix weight_1Eig = _testEig::fromMlp(weight_1);
-        EigenRowVectorf bias_1Eig = _testEig::fromMlp(bias_1);
+        EigenMatrix batchEig = _testEig::fromCUPMatrix(x);
+        EigenMatrix weight_1Eig = _testEig::fromCUPMatrix(weight_1);
+        EigenRowVectorf bias_1Eig = _testEig::fromCUPVector(bias_1);
         EigenMatrix z1Eig = (batchEig * weight_1Eig).rowwise() + bias_1Eig;
 
         EigenMatrix a1Eig = _testEig::relu(z1Eig);
 
-        EigenMatrix weight_2Eig = _testEig::fromMlp(weight_2);
-        EigenRowVectorf bias_2Eig = _testEig::fromMlp(bias_2);
+        EigenMatrix weight_2Eig = _testEig::fromCUPMatrix(weight_2);
+        EigenRowVectorf bias_2Eig = _testEig::fromCUPVector(bias_2);
         EigenMatrix z2Eig = (a1Eig * weight_2Eig).rowwise() + bias_2Eig;
 
         EigenMatrix a2Eig = _testEig::softmax(z2Eig);
 #endif // COMPARE_MLP_WITH_EIGEN
         z1.dup_rows(bias_1);
-        z1.gemm(batch, weight_1, 1.f, 1.f);
+        z1.gemm(x, weight_1, 1.f, 1.f);
 
         a1 = z1;
-        relu(a1);
+        int blocks = (a1.size() + BLOCK_DIM - 1) / BLOCK_DIM;
+        relu << <blocks, BLOCK_DIM >> > (a1.data, a1.size());
+        cudaDeviceSynchronize();
 
         //z2 = (a1 * weight_2) +(rowWise) bias_2;
         z2.dup_rows(bias_2);
@@ -650,15 +478,14 @@ public:
         _testEig::cmpMat(a2Cmp, a2Eig);
 #endif // COMPARE_MLP_WITH_EIGEN
     }
-
     /*
     input: all training data
     y: all labels
     startRow: this batch begins at startRow
     batchRows: this batch ends at endRow = startRow + batchSize
     */
-    void backward(const MlpMatrix& batchX, const MlpVector<__m256i>& batchY) {
-        float divM = 1.f / batchX.gemmRows;
+    void backward(const CUPMatrix<float>& batch, const CUPMatrix<int>& labels, float lr) {
+        float divM = 1.f / batch.rows;
 #ifdef COMPARE_MLP_WITH_EIGEN
         EigenMatrix y_one_hotEig = _testEig::one_hot(batchY, a2.cols); // a2.cols = outputSize
 
@@ -791,35 +618,33 @@ public:
 #endif
     }
 
-    void evalEpoch(Dataset& trainData, int epoch) {
-        float epsilon = 1.0e-6F;
-        trainData.setGemmView(0, trainData.x.rows); // max batch
-        setBatchSize(trainData.x.rows); // max batch
-        forward(trainData.x); // output is in `a2` member var
-        __m256 epoch_loss = _mm256_setzero_ps();
-        size_t outSize = a2.cols;
-        const auto& y = trainData.y;
-        int batchSize = a2.rows;
-        for (int row = 0; row < batchSize; row += 8) {
-            __m256 probs = _mm256_set_ps(
-                *a2.data32(row, y.at32(y.gemmOffset + row)),
-                *a2.data32(row + 1, y.at32(y.gemmOffset + row + 1)),
-                *a2.data32(row + 2, y.at32(y.gemmOffset + row + 2)),
-                *a2.data32(row + 3, y.at32(y.gemmOffset + row + 3)),
-                *a2.data32(row + 4, y.at32(y.gemmOffset + row + 4)),
-                *a2.data32(row + 5, y.at32(y.gemmOffset + row + 5)),
-                *a2.data32(row + 6, y.at32(y.gemmOffset + row + 6)),
-                *a2.data32(row + 7, y.at32(y.gemmOffset + row + 7)));
-            probs = _mm256_add_ps(probs, _mm256_set1_ps(epsilon)); // against log(0)
-            probs = _mm256_log_ps(probs);
-            epoch_loss = _mm256_add_ps(epoch_loss, probs);
-        }
+    void evalEpoch(const CUPMatrix<float> x, int epoch) {
+        std::cout << "evalEpoch not implemented\n";
+        //float epsilon = 1.0e-6F;
+        //forward(); // output is in `a2` member var
+        //__m256 epoch_loss = _mm256_setzero_ps();
+        //size_t outSize = a2.cols;
+        //int batchSize = a2.rows;
+        //for (int row = 0; row < batchSize; row += 8) {
+        //    __m256 probs = _mm256_set_ps(
+        //        *a2.data32(row, y.at32(y.gemmOffset + row)),
+        //        *a2.data32(row + 1, y.at32(y.gemmOffset + row + 1)),
+        //        *a2.data32(row + 2, y.at32(y.gemmOffset + row + 2)),
+        //        *a2.data32(row + 3, y.at32(y.gemmOffset + row + 3)),
+        //        *a2.data32(row + 4, y.at32(y.gemmOffset + row + 4)),
+        //        *a2.data32(row + 5, y.at32(y.gemmOffset + row + 5)),
+        //        *a2.data32(row + 6, y.at32(y.gemmOffset + row + 6)),
+        //        *a2.data32(row + 7, y.at32(y.gemmOffset + row + 7)));
+        //    probs = _mm256_add_ps(probs, _mm256_set1_ps(epsilon)); // against log(0)
+        //    probs = _mm256_log_ps(probs);
+        //    epoch_loss = _mm256_add_ps(epoch_loss, probs);
+        //}
 
-        float epoch_loss_sum = sum256f(epoch_loss);
-        epoch_loss_sum /= -int(batchSize);
-        losses.push_back(epoch_loss_sum);
+        //float epoch_loss_sum = sum256f(epoch_loss);
+        //epoch_loss_sum /= -int(batchSize);
+        //losses.push_back(epoch_loss_sum);
 
-        std::cout << (epoch + 1) << "\t" << epoch_loss_sum << std::endl;
+        //std::cout << (epoch + 1) << "\t" << epoch_loss_sum << std::endl;
 
 
 
@@ -837,108 +662,66 @@ public:
         }
 #endif // COMPARE_MLP_WITH_EIGEN
 
-        setBatchSize(m);
     }
 
-    void train(Dataset& trainData, int epochs = 10) {
-        std::cout << "Epoch\tLoss\n";
-        // batchSize is already set to m
-        auto& x = trainData.x;
-        auto& y = trainData.y;
-        int maxSamples = m * (x.rows / m);
-        for (int epoch = 0; epoch < epochs; ++epoch) {
+    std::vector<int> predict(const CUPMatrix<float>& testX) {
+        forward(testX);
 
-            Time begin = getTime();
-            for (int i = 0; i < maxSamples; i += m) {
-                trainData.setGemmView(i, m);
-                forward(x);
-                backward(x, y);
-            }
-            Seconds elapsed = getTime() - begin;
-            std::cout << "epoch time: " << elapsed << std::endl;
-
-#ifdef EVAL_EPOCH
-            evalEpoch(trainData, epoch);
-#endif
-        }
-    }
-
-    MlpVector<__m256i> predict(const MlpMatrix& test) {
-        setBatchSize(test.gemmRows);
-        forward(test);
-
-        MlpVector<__m256i> predictions(test.gemmRows);
-        for (int row = 0; row < predictions.size32(); ++row) {
-            const float* start32 = a2.data32(row, 0);
-            const float* end32 = start32 + a2.cols;
-            const auto maxIter = std::max_element(start32, end32);
-            size_t maxIndex = std::distance(start32, maxIter);
-            predictions.at32(row) = maxIndex;
-        }
-
-#ifdef COMPARE_MLP_WITH_EIGEN
-        EigenMatrix a2Eig = _testEig::fromMlp(a2);
+        std::vector<int> predictions{ testX.rows, 1 };
+        EigenMatrix a2Eig = _testEig::fromCUPMatrix(a2);
         for (int i = 0; i < a2Eig.rows(); ++i) {
             int maxIndex;
             a2Eig.row(i).maxCoeff(&maxIndex);
-            std::cout << "predict.at32(" << i << ")=" << predictions.at32(i) << "; a2Eig.row(i).maxCoeff(&maxIndex) = " << maxIndex << "\n";
-            if (predictions.at32(i) != maxIndex) {
-                std::cerr << "wrong predict\n";
-            }
+            predictions[i] = maxIndex;
+            std::cout << i << ": " << maxIndex << "\n";
         }
-#endif // COMPARE_MLP_WITH_EIGEN
-
 
         return predictions;
     }
 
-    float lr;
-    int m; //< mini-batch size
+    CUPMatrix<float> weight_1; //< dim [inputSize x hiddenSize]
+    CUPMatrix<float> bias_1;   //< dim [1 x hiddenSize]
+    CUPMatrix<float> weight_2; //< dim [hiddenSize x outputSize]
+    CUPMatrix<float> bias_2;   //< dim [1 x outputSize]
 
-    MlpMatrix weight_1; //< dim [inputSize x hiddenSize]
-    MlpVector<__m256> bias_1;   //< dim [1 x hiddenSize]
-    MlpMatrix weight_2; //< dim [hiddenSize x outputSize]
-    MlpVector<__m256> bias_2;   //< dim [1 x outputSize]
-
-    MlpMatrix z1; //< dim [batchSize x hiddenSize]
-    MlpMatrix z2; //< dim [batchSize x outputSize]
-    MlpMatrix a1; //< dim [batchSize x hiddenSize]
-    MlpMatrix a2; //< dim [batchSize x outputSize]
-    std::vector<float> losses;
+    CUPMatrix<float> z1; //< dim [batchSize x hiddenSize]
+    CUPMatrix<float> z2; //< dim [batchSize x outputSize]
+    CUPMatrix<float> a1; //< dim [batchSize x hiddenSize]
+    CUPMatrix<float> a2; //< dim [batchSize x outputSize]
 
     // temp matrices
-    MlpMatrix y_one_hot;
-    MlpMatrix dL_dz2;
-    MlpMatrix dL_dW2; // dim [hiddenSize x outputSize]
-    MlpMatrix dL_db2;
-    MlpMatrix dL_da1;
-    MlpMatrix dL_dz1;
-    MlpMatrix dL_dW1;
-    MlpMatrix dL_db1;
-};
+    CUPMatrix<float> y_one_hot;
+    CUPMatrix<float> dL_dz2;
+    CUPMatrix<float> dL_dW2; // dim [hiddenSize x outputSize]
+    CUPMatrix<float> dL_db2;
+    CUPMatrix<float> dL_da1;
+    CUPMatrix<float> dL_dz1;
+    CUPMatrix<float> dL_dW1;
+    CUPMatrix<float> dL_db1;
 
-///////////////////////////////////////////////////////
-// TESTEIGEN
+    std::vector<float> losses;
+};
 
 /* Eigen implementations for comparisons with my implementations */
 namespace _testEig {
-    EigenMatrix fromMlp(const MlpMatrix& mlp) {
-        EigenMatrix eig = EigenMatrix(mlp.gemmRows, mlp.cols);
-        for (int row = 0; row < mlp.gemmRows; ++row) {
-            int mlpRow = row + mlp.gemmOffset;
-            for (int col = 0; col < mlp.cols; ++col) {
-                eig(row, col) = *mlp.data32(mlpRow, col);
+
+    EigenMatrix fromCUPMatrix(const CUPMatrix<float>& cup) {
+        std::vector<float> cpuVec = cup.cpyFromDevice();
+        EigenMatrix eig = EigenMatrix(cup.rows, cup.cols);
+        for (int row = 0; row < cup.rows; ++row) {
+            for (int col = 0; col < cup.cols; ++col) {
+                eig(row, col) = cpuVec[row * cup.cols + col];
             }
 
         }
         return eig;
     }
 
-    EigenRowVectorf fromMlp(const MlpVector<__m256>& mlp) {
-        EigenMatrix eig = EigenRowVectorf(mlp.gemmRows);
-        for (int row = 0; row < mlp.gemmRows; ++row) {
-            int mlpRow = row + mlp.gemmOffset;
-            eig(row) = mlp.at32(mlpRow);
+    EigenRowVectorf fromCUPVector(const CUPMatrix<float>& cup) {
+        std::vector<float> cpuVec = cup.cpyFromDevice();
+        EigenMatrix eig = EigenRowVectorf(cup.rows);
+        for (int row = 0; row < cup.rows; ++row) {
+            eig(row) = cpuVec[row];
         }
         return eig;
     }
@@ -955,11 +738,12 @@ namespace _testEig {
         return sm;
     };
 
-    EigenMatrix one_hot(const MlpVector<__m256i>& y, int maxVal) {
-        EigenMatrix y_one_hot = EigenMatrix(y.gemmRows, maxVal);
+    EigenMatrix one_hot(const EigenMatrix& y, int maxVal) {
+        assert(y.cols() == 1);
+        EigenMatrix y_one_hot = EigenMatrix(y.rows(), maxVal);
         y_one_hot.setZero();
         for (int i = 0; i < y_one_hot.rows(); ++i) {
-            int label = y.at32(y.gemmOffset + i);
+            int label = y(i);
             y_one_hot(i, label) = 1.0f;
         }
         return y_one_hot;
@@ -971,7 +755,7 @@ namespace _testEig {
     };
 
     EigenMatrix positive_mask(const EigenMatrix& data, const EigenMatrix& mask) {
-        return (data.array() * (mask.array() > 0).cast<real_t>()).matrix();
+        return (data.array() * (mask.array() > 0).cast<float>()).matrix();
     };
 
     void cmpMat(const EigenMatrix& a, const EigenMatrix& b) {
@@ -987,6 +771,27 @@ namespace _testEig {
             assert(false);
         }
     }
+
+    void statistics(EigenMatrix& mat) {
+        float minVal = mat.minCoeff();
+        float maxVal = mat.maxCoeff();
+        float sumVal = mat.sum();
+
+        std::cout << "Data: min = " << minVal
+            << ", max = " << maxVal
+            << ", sum = " << sumVal << std::endl;
+
+    }
+    void printImage(const EigenMatrix& mat, int imageId, int rows, int cols) {
+        for (size_t y = 0; y < rows; ++y) {
+            for (size_t x = 0; x < cols; ++x) {
+                float val = mat(imageId, y * cols + x);
+                std::cout << ASCIIArtFromFloat(val);
+            }
+            std::cout << std::endl;
+        }
+    }
+
 }
 
 
@@ -1162,27 +967,20 @@ void testRun() {
 int main() {
     enableFpExcept();
     testRun();
-    bool HALVEDATA = false;
-    bool DEBUGSTATISTICS = false;
 
-    Dataset trainData = Dataset("assets.ignored/train-images.idx3-ubyte", "assets.ignored/train-labels.idx1-ubyte", HALVEDATA);
-    Dataset testData = Dataset("assets.ignored/t10k-images.idx3-ubyte", "assets.ignored/t10k-labels.idx1-ubyte", HALVEDATA);
-    if (DEBUGSTATISTICS) {
-        testData.statistics();
-        trainData.statistics();
-    }
+    CUPMatrix<float> x = readIdxXubyte<float>("assets.ignored/train-images.idx3-ubyte");
+    CUPMatrix<int> y = readIdxXubyte<int>("assets.ignored/train-labels.idx1-ubyte");
+    CUPMatrix<float> testX = readIdxXubyte<float>("assets.ignored/t10k-images.idx3-ubyte");
+    CUPMatrix<int> testY = readIdxXubyte<int>("assets.ignored/t10k-labels.idx1-ubyte");
 
-    size_t inputSize = trainData.imageRows * trainData.imageCols;
-    size_t hiddenSize = 128;
-    const auto maxLabel = std::max_element(trainData.y.data32(), trainData.y.end32());
-    size_t outputSize = *maxLabel + 1;
+    const size_t hiddenSize = 128;
     int miniBatchSize = 128;
-    MLP mlp{ inputSize, hiddenSize, outputSize, miniBatchSize, 0.01f };
+    MLP mlp{ x, y, hiddenSize, miniBatchSize, 0.01f };
 
     Time begin = getTime();
 
     int epochs = 10;
-    mlp.train(trainData, epochs);
+    mlp.train(epochs);
     MlpVector<__m256i> predictions = mlp.predict(testData.x);
 
     //double accuracy = (predictions.array() == testData.labels.array()).cast<double>().mean();
