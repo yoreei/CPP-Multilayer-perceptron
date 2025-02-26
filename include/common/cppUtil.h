@@ -2,6 +2,8 @@
 
 #include <chrono>
 #include <iterator>
+#include <random>
+
 using Time = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
 Time getTime() {
@@ -44,7 +46,7 @@ void enableFpExcept() {
 }
 
 template <typename Iterator>
-void randSeq(Iterator begin, Iterator end, std::iter_value_t<Iterator> Min = 0, std::iter_value_t<Iterator> rMax = 1) {
+void randSeq(Iterator begin, Iterator end, std::iter_value_t<Iterator> rMin = 0, std::iter_value_t<Iterator> rMax = 1) {
     using T = std::iter_value_t<Iterator>;
     static std::random_device rd;
     static std::mt19937 gen(rd());
@@ -57,21 +59,12 @@ void randSeq(Iterator begin, Iterator end, std::iter_value_t<Iterator> Min = 0, 
         void>>;
 
 
-    static_assert(!std::is_same_v<Distribution<T>, void>,
+    static_assert(!std::is_same_v<Distribution, void>,
         "T must be an integral or floating-point type");
 
-    Distribution<T> dist(rMin, rMax);
-    for (float& val : randomFloats) {
-        val = dist(gen);
-    }
-
-    return _mm256_load_ps(randomFloats.data());
-}
-
-void seqRan256(__m256* begin, const __m256* end, float rMin = 0.f, float rMax = 1.f) {
+    Distribution dist(rMin, rMax);
     while (begin != end) {
-        *begin = rand256ps(rMin, rMax);
+        *begin = dist(gen);
         ++begin;
     }
-}
 }
