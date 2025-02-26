@@ -4,7 +4,6 @@
 #undef _SILENCE_CXX23_DENORM_DEPRECATION_WARNING
 #undef _SILENCE_ALL_CXX23_DEPRECATION_WARNINGS
 
-
 #include <iostream>
 #include <numeric>
 #include <algorithm>
@@ -15,7 +14,6 @@
 #include <ranges>
 #include <type_traits>
 #include <algorithm>
-#include <chrono>
 #include <immintrin.h>
 #include <cassert>
 
@@ -29,20 +27,13 @@
 // compute loss function (slows down epochs)
 #undef EVAL_EPOCH
 
-#include "simdUtil.h"
+#include "common/simdUtil.h"
+#include "common/cppUtil.h"
 
 using EigenMatrix = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
 using EigenRowVectorf = Eigen::RowVector<float, Eigen::Dynamic>;
 using EigenVectorf = Eigen::Vector<float, Eigen::Dynamic>;
 
-
-using Time = std::chrono::time_point<std::chrono::high_resolution_clock>;
-
-Time getTime() {
-    return std::chrono::high_resolution_clock::now();
-}
-using Milli = std::chrono::duration<double, std::milli>;
-using Seconds = std::chrono::duration<double, std::ratio<1>>;
 
 uint32_t swapEndian(uint32_t val) {
     return ((val >> 24) & 0xff) |
@@ -929,7 +920,7 @@ namespace _testEig {
         return eig;
     }
     EigenMatrix relu(const EigenMatrix& x) {
-        return x.array().max(0.0).matrix();
+        return x.cwiseMax(0.0f);
     };
 
     EigenMatrix softmax(const EigenMatrix& x) {

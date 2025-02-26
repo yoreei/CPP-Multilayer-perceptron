@@ -1,4 +1,5 @@
-﻿#include <string>
+﻿#include "common/cppUtil.h"
+#include <string>
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -12,25 +13,18 @@
 #include <type_traits>
 #include <cassert>
 
+#include "Eigen/Dense"
+
 #include "device_launch_parameters.h"
 #include "cuda_runtime.h"
 #include <cublas_v2.h>
 #include <thrust/device_ptr.h>
 #include <thrust/extrema.h>
+#include <cub/cub.cuh>
 
 #include "common/cuUtil.h"
-#include "common/cppUtil.h"
 #include "common/simdUtil.h"
 
-#define _SILENCE_CXX23_DENORM_DEPRECATION_WARNING
-#define _SILENCE_ALL_CXX23_DEPRECATION_WARNINGS
-#include "Eigen/Dense"
-#undef _SILENCE_CXX23_DENORM_DEPRECATION_WARNING
-#undef _SILENCE_ALL_CXX23_DEPRECATION_WARNINGS
-
-#define SLEEF_STATIC_LIBS
-#include "sleef/sleef.h"
-#include <openblas/cblas.h>
 
 // define to compare my implementation with an eigen implementation (known to work) (slow)
 #define COMPARE_MLP_WITH_EIGEN
@@ -47,11 +41,6 @@ using EigenVectorf = Eigen::Vector<float, Eigen::Dynamic>;
 // BLOCKDIM [1 to 1024]: Number of threads per block in the CUDA kernel
 constexpr size_t BLOCK_DIM = 256;
 
-__global__ void relu(float* data, int size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size)
-        data[idx] = data[idx] > 0 ? data[idx] : 0;
-}
 
 uint32_t swapEndian(uint32_t val) {
     return ((val >> 24) & 0xff) |
@@ -60,24 +49,36 @@ uint32_t swapEndian(uint32_t val) {
         ((val << 24) & 0xff000000);
 }
 
-enum CUPTransMask {
-    CUPNoneTrans = 0,
-    CUPATrans = 1,
-    CUPBTrans = 2,
-    CUPABTrans = 3,
+/* a singleton class is not elegant for CublasHandle::get(), but it works for this project */
+class CublasHandle {
+public:
+    static cublasHandle_t& get() {
+        if (mustInit) {
+            cublasCreate(&CublasHandle::get());
+        }
+        return CublasHandle::get();
+    }
+    static void free() {
+        if (!mustInit) {
+            cublasDestroy(CublasHandle::get());
+        }
+    }
+private:
+    inline static bool mustInit = true;
+    inline static cublasHandle_t cublasHandle;
 };
 
 template <typename T>
 class CUPRAII {
 public:
     CUPRAII(const std::vector<T>& cpuVec) : size(cpuVec.size()) {
-        if (ptr) { free(ptr); }
+        if (ptr) { free(); }
         ptr = cuAllocCpyFromHost(cpuVec);
     }
 
     CUPRAII(int size) : size(size) {
-        if (ptr) { free(ptr); }
-        std::vector<T>& cpuVec(size, 0xBADBAD);
+        if (ptr) { free(); }
+        std::vector<T> cpuVec(size, 0xBADBAD);
         ptr = cuAllocCpyFromHost(cpuVec);
     }
 
@@ -94,53 +95,72 @@ public:
             *this = CUPRAII(rhs.size);
             std::cout << "reallocating CUPRAII\n";
         }
-        CUDA_CHECK(cudaMemcpy(ptr, rhs.ptr, sizeof(T) * size, cudaMemcpyDeviceToDevice));
+        CU_CHECK(cudaMemcpy(ptr, rhs.ptr, sizeof(T) * size, cudaMemcpyDeviceToDevice));
     }
     CUPRAII& operator=(const CUPRAII& rhs) {
         if (this->size != rhs.size) {
             *this = CUPRAII(rhs.size);
             std::cout << "reallocating CUPRAII\n";
         }
-        CUDA_CHECK(cudaMemcpy(ptr, rhs.ptr, sizeof(T) * size, cudaMemcpyDeviceToDevice));
+        CU_CHECK(cudaMemcpy(ptr, rhs.ptr, sizeof(T) * size, cudaMemcpyDeviceToDevice));
         return *this;
     }
 
     __host__ void free() {
-        CHECK_CUDA(cudaFree(ptr));
+        CU_CHECK(cudaFree(ptr));
     }
     T* ptr = nullptr;
     size_t size;
+};
+
+enum CUPTransMask {
+    CUPNoneTrans = 0,
+    CUPATrans = 1,
+    CUPBTrans = 2,
+    CUPABTrans = 3,
 };
 
 /* non-owning type */
 template <typename T>
 struct CUPMatrix {
     CUPMatrix() = default;
-    __host__ CUPMatrix(const std::vector<T>& cpuVec, int rows, int cols) : rows(rows), cols(cols), raii(cpuVec), {
+    __host__ CUPMatrix(const std::vector<T>& cpuVec, int rows, int cols) : rows(rows), cols(cols), raii(cpuVec) {
         assert(rows * cols == cpuVec.size());
     }
-        __host__ CUPMatrix(int rows, int cols) : rows(rows), cols(cols), raii(rows* cols), {}
+    __host__ CUPMatrix(int rows, int cols) : rows(rows), cols(cols), raii(rows* cols) {}
 
-        size_t get(int row, int col) {
+    __host__ CUPMatrix(int rows, int cols, T val) : rows(rows), cols(cols) {
+        std::vector<T> cpuVec(rows * cols, val);
+        raii = CUPRAII{ cpuVec };
+    }
+
+    size_t get(int row, int col) {
         assert(row < rows && col < cols);
         return row * cols + col;
     }
     T* end() {
         return data + rows * cols;
     }
+
+    static CUPMatrix<T> Random(int rows, int cols, T minVal, T maxVal) {
+        std::vector<T> ranVec(rows * cols, 0xBADBAD);
+        randSeq(ranVec.begin(), ranVec.end(), minVal, maxVal);
+        return CUPMatrix<T>(ranVec, rows, cols);
+    }
+
     std::vector<T> cpyFromDevice() const {
         std::vector<T> cpuVec(rows * cols, 0xBADBAD);
-        cuCpyFromDevice(cpuVec, data);
+        cuCpyFromDevice<T>(cpuVec, data);
         return cpuVec;
     }
 
-    int size() {
+    int size() const {
         assert(rows * cols <= raii.size);
         return rows * cols;
     }
 
     void setView(int rowOffset, int rowSpan) {
-        T* newData = _dataStart + rowOffset * cols;
+        T* newData = raii.ptr + rowOffset * cols;
         if (newData < raii.ptr || newData + rowSpan * cols >= raii.ptr + raii.size) {
             throw std::runtime_error("wrong offset & span");
         }
@@ -151,172 +171,215 @@ struct CUPMatrix {
 
     int raiiRows() const {
         assert(raii.size % cols == 0);
-        return raii.size() / cols;
+        return raii.size / cols;
     }
 
     template <CUPTransMask transMask = CUPNoneTrans>
-    void gemm(const CUPMatrix<T>& aMatrix, const CUPMatrix<T>& bMatrix, float alpha = 1.f, float beta = 0.f);
-    void positive_mask(const CUPMatrix<T>& mask);
-    void dup_rows(const CUPMatrix<T>& row);
-    void softmax();
+    void gemm(const CUPMatrix<T>& aMatrix, const CUPMatrix<T>& bMatrix, float alpha = 1.f, float beta = 0.f) {
+        float* C = data;
+        const float* A = aMatrix.data;
+        const float* B = bMatrix.data;
+        int M, N, K;
+        int lda, ldb;
+        cublasOperation_t aTransOpt;
+        cublasOperation_t bTransOpt;
+
+        if constexpr (transMask == CUPNoneTrans) {
+            if (aMatrix.cols != bMatrix.rows) {
+                throw std::runtime_error("wrong dim");
+            }
+            M = aMatrix.rows;
+            K = aMatrix.cols;
+            N = bMatrix.cols;
+            lda = K;
+            ldb = N;
+            aTransOpt = CUBLAS_OP_N;
+            bTransOpt = CUBLAS_OP_N;
+        }
+        else if constexpr (transMask == CUPATrans) {
+            if (aMatrix.rows != bMatrix.rows) {
+                throw std::runtime_error("wrong dim");
+            }
+            M = aMatrix.cols; // A trans!
+            K = aMatrix.rows; // A trans!
+            N = bMatrix.cols;
+            lda = M;
+            ldb = N;
+            aTransOpt = CUBLAS_OP_T;
+            bTransOpt = CUBLAS_OP_N;
+        }
+        else if constexpr (transMask == CUPBTrans) {
+            if (aMatrix.cols != bMatrix.cols) {
+                throw std::runtime_error("wrong dim");
+            }
+            M = aMatrix.rows;
+            K = aMatrix.cols;
+            N = bMatrix.rows; // B trans!
+            lda = K;
+            ldb = K;
+            aTransOpt = CUBLAS_OP_N;
+            bTransOpt = CUBLAS_OP_T;
+        }
+        else if constexpr (transMask == (CUPATrans | CUPBTrans)) {
+            if (aMatrix.rows != bMatrix.cols) {
+                throw std::runtime_error("wrong dim");
+            }
+            M = aMatrix.cols; // A trans!
+            K = aMatrix.rows; // A trans!
+            N = bMatrix.rows; // B trans!
+            lda = M;
+            ldb = K;
+            aTransOpt = CUBLAS_OP_T;
+            bTransOpt = CUBLAS_OP_T;
+        }
+        else {
+            static_assert(false, "wrong mask");
+        }
+
+        if (M != rows || N != cols) {
+            throw std::runtime_error("wrong C dim");
+        }
+
+        CUBLAS_CHECK(
+            cublasSgemm(
+                CublasHandle::get(),
+                aTransOpt,
+                bTransOpt,
+                M,
+                N,
+                K,
+                &alpha,
+                A,
+                lda,	          // lda, leading dimension of A (num col in A)
+                B,
+                ldb,    // ldb, leading dimension of B (num col in B)
+                &beta,             // beta
+                C,	  // C (OUT, result)
+                N    // ldc, leading dimension of C (num col in C)
+            );
+        )
+    }
+
+
+    void positiveMask(const CUPMatrix<T>& mask) {
+        assert(cols == mask.cols && rows == mask.rows);
+        int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
+        cuPositiveMask << <blocks, BLOCK_DIM >> > (*this, mask);
+        cudaDeviceSynchronize();
+
+    }
+
+    void dup_rows(const CUPMatrix<T>& row) {
+        // O(log n) memcpy calls
+
+        if (row.size() != cols) {
+            int _rowSize = row.size();
+            throw std::runtime_error("wrong size " + std::to_string(_rowSize));
+        }
+
+        size_t rowSize = sizeof(T) * row.size();
+        CU_CHECK(cudaMemcpy(data, row.data, rowSize, cudaMemcpyDeviceToDevice));
+
+        size_t copied = 1;
+        char* d = reinterpret_cast<char*>(data);
+
+        // double copy region every time
+        while (copied < rows) {
+            size_t rowsToCopy = std::min(copied, rows - copied);
+            CU_CHECK(cudaMemcpy(d + copied * rowSize, d, rowsToCopy * rowSize, cudaMemcpyDeviceToDevice));
+            copied += rowsToCopy;
+        }
+    }
+
+    void relu() {
+        int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
+        cuRelu << <blocks, BLOCK_DIM >> > (*this);
+        cudaDeviceSynchronize();
+    }
+
+
+    void oneHot(const CUPMatrix<int>& y, int maxVal) {
+        assert(y.cols == 1);
+        *this = CUPMatrix(y.rows, maxVal);
+
+        int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
+        cuOneHot << <blocks, BLOCK_DIM >> > (*this, y);
+        cudaDeviceSynchronize();
+
+    }
+
+
+    void softmax() {
+        // matrix.cols is currently hardcoded for this function. TODO unhardcode!
+        constexpr int BlockSize = 10;
+        if (cols != BlockSize) {
+            throw std::runtime_error("unhardcode me");
+        }
+
+        int blocks = (size() + BlockSize - 1) / BlockSize;
+        cuSoftmax << <blocks, BlockSize >> > (*this);
+        cudaDeviceSynchronize();
+    }
 
     T* data = nullptr; // device pointer!
     int rows = 0;
     int cols = 0;
 private:
-    CUPRAII<T> raii;
+    CUPRAII<T> raii{ 0 };
 };
 
+//BlockSize given as template because we need it to be constexpr
+template <int BlockSize>
+__global__ static void cuSoftmax(CUPMatrix<float> mat) {
+    assert(mat.cols == blockDim.x && mat.cols == BlockSize);
+    // Each block processes one row
+    typedef cub::BlockReduce<float, BlockSize> BlockReduce;
+    __shared__ typename BlockReduce::TempStorage temp_storage;
 
-// C = αA ∗ B ∗ +βC
-template <typename T>
-template <CUPTransMask transMask>
-void CUPMatrix<T>::gemm(const CUPMatrix& aMatrix, const CUPMatrix& bMatrix, float alpha, float beta) {
-    float* C = data;
-    const float* A = aMatrix.data;
-    const float* B = bMatrix.data;
-    int M, N, K;
-    int lda, ldb;
-    CBLAS_TRANSPOSE aTransOpt;
-    CBLAS_TRANSPOSE bTransOpt;
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    float thread_max = (idx < mat.size()) ? mat.data[idx] : mat.data[0];
 
-    if constexpr (transMask == MlpNoneTrans) {
-        if (aMatrix.cols != bMatrix.gemmRows) {
-            throw std::runtime_error("wrong dim");
-        }
-        M = aMatrix.gemmRows;
-        K = aMatrix.cols;
-        N = bMatrix.cols;
-        lda = K;
-        ldb = N;
-        aTransOpt = CblasNoTrans;
-        bTransOpt = CblasNoTrans;
-    }
-    else if constexpr (transMask == MlpATrans) {
-        if (aMatrix.gemmRows != bMatrix.gemmRows) {
-            throw std::runtime_error("wrong dim");
-        }
-        M = aMatrix.cols; // A trans!
-        K = aMatrix.gemmRows; // A trans!
-        N = bMatrix.cols;
-        lda = M;
-        ldb = N;
-        aTransOpt = CblasTrans;
-        bTransOpt = CblasNoTrans;
-    }
-    else if constexpr (transMask == MlpBTrans) {
-        if (aMatrix.cols != bMatrix.cols) {
-            throw std::runtime_error("wrong dim");
-        }
-        M = aMatrix.gemmRows;
-        K = aMatrix.cols;
-        N = bMatrix.gemmRows; // B trans!
-        lda = K;
-        ldb = K;
-        aTransOpt = CblasNoTrans;
-        bTransOpt = CblasTrans;
-    }
-    else if constexpr (transMask == (MlpATrans | MlpBTrans)) {
-        if (aMatrix.gemmRows != bMatrix.cols) {
-            throw std::runtime_error("wrong dim");
-        }
-        M = aMatrix.cols; // A trans!
-        K = aMatrix.gemmRows; // A trans!
-        N = bMatrix.gemmRows; // B trans!
-        lda = M;
-        ldb = K;
-        aTransOpt = CblasTrans;
-        bTransOpt = CblasTrans;
-    }
-    else {
-        static_assert(false, "wrong mask");
+    // Perform block-wide reduction: block_max is different for each block
+    float block_max = BlockReduce(temp_storage).Reduce(thread_max, cub::Max());
+
+    if (idx < mat.size()) {
+        mat.data[idx] -= block_max;
+        mat.data[idx] = expf(mat.data[idx]);
     }
 
-    if (M != rows || N != cols) {
-        throw std::runtime_error("wrong C dim");
-    }
+    float thread_sum = (idx < mat.size()) ? mat.data[idx] : 0;
+    float block_sum = BlockReduce(temp_storage).Reduce(thread_sum, cub::Sum());
 
-    cblas_sgemm(CblasRowMajor,
-        aTransOpt,
-        bTransOpt,
-        M,
-        N,
-        K,
-        alpha,
-        A,
-        lda,	          // lda, leading dimension of A (num col in A)
-        B,
-        ldb,    // ldb, leading dimension of B (num col in B)
-        beta,             // beta
-        C,	  // C (OUT, result)
-        N);   // ldc, leading dimension of C (num col in C)
-}
-
-
-//v dim(mask) = dim(*this)
-template <typename T>
-void CUPMatrix<T>::positive_mask(const CUPMatrix<T>& mask) {
-    __m256 zeros = _mm256_setzero_ps();
-    for (size_t i = 0; i < size256(); ++i) {
-        __m256 mask8 = _mm256_cmp_ps(mask.data256[i], zeros, _CMP_GT_OS); // mask > 0 ? 1 : 0
-        data256[i] = _mm256_and_ps(data256[i], mask8); // mask == 1 ? elem = elem : elem = 0
-    }
-
-}
-
-template <typename T>
-void CUPMatrix<T>::dup_rows(const CUPMatrix<T>& row) {
-    // O(log n) memcpy calls
-
-    if (row.size() != cols) {
-        int _rowSize = row.size();
-        throw std::runtime_error("wrong size " + _rowSize);
-    }
-
-    size_t block_size = sizeof(row.at32(0)) * row.size32();
-    std::memcpy(data32(), row.data32(), block_size);
-
-    size_t copied = 1;
-    char* d = reinterpret_cast<char*>(data256.data());
-
-    // double copy region every time
-    while (copied < rows) {
-        size_t blocks_to_copy = std::min(copied, rows - copied);
-        std::memcpy(d + copied * block_size, d, blocks_to_copy * block_size);
-        copied += blocks_to_copy;
+    if (idx < mat.size()) {
+        mat.data[idx] /= block_sum;
     }
 }
 
-
-template <typename T>
-void CUPMatrix<T>::softmax() {
-    for (int row = 0; row < x.rows; ++row) {
-        real_t* start32 = x.data32(row);
-        real_t* end32 = start32 + x.cols;
-        const real_t rowMax = (*std::max_element(start32, end32));
-        __m256 sub = _mm256_set1_ps(rowMax);
-
-        __m256* start256 = &x.data256[row * (x.cols / 8)];
-        __m256 sum256 = _mm256_setzero_ps();
-
-        // subtract rowMax, compute exp, accumulate sum256
-        assert(x.cols % 8 == 0);
-        for (size_t i = 0; i < x.cols / 8; ++i) {
-            assert(start256 + i < x.end256());
-            start256[i] = _mm256_sub_ps(start256[i], sub);
-            start256[i] = Sleef_expf8_u10avx2(start256[i]);
-            sum256 = _mm256_add_ps(sum256, start256[i]);
+__global__ static void cuOneHot(CUPMatrix<float> lhs, const CUPMatrix<int> y) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int row = idx / lhs.cols;
+    int col = idx % lhs.cols;
+    if (idx < lhs.size()) {
+        lhs.data[idx] = 0;
+        if (col == y.data[row]) {
+            lhs.data[idx] = 1.0f;
         }
-        float rowSum = sum256f(sum256);
-        __m256 rowSum256 = _mm256_set1_ps(rowSum);
-
-        // divide exponential by rowSum
-        for (size_t i = 0; i < x.cols / 8; ++i) {
-            assert(start256 + i < x.end256());
-            start256[i] = _mm256_div_ps(start256[i], rowSum256);
-        }
-
     }
+}
+
+__global__ static void cuRelu(CUPMatrix<float> mat) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < mat.size())
+        mat.data[idx] = mat.data[idx] > 0 ? mat.data[idx] : 0;
+}
+__global__ static void cuPositiveMask(CUPMatrix<float> mat, const CUPMatrix<float> mask) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < mat.size()) {
+        if (mask.data[idx] <= 0) {
+            mat.data[idx] = 0;
+        }
+    }
+
 }
 
 
@@ -324,7 +387,6 @@ template <typename T>
 CUPMatrix<T> readIdxXubyte(const std::string& dataFile) {
     // T == float: we are reading data
     // T == int: we are reading labels
-    constexpr int numDim = std::is_same_v(T, int) ? 1 : 3;
     std::cout << "loading " << dataFile << std::endl;
     std::ifstream dataIfstream(dataFile, std::ios::binary);
     if (!dataIfstream) {
@@ -338,10 +400,11 @@ CUPMatrix<T> readIdxXubyte(const std::string& dataFile) {
     magicNumber = swapEndian(magicNumber);
     std::cout << "Magic Number: " << magicNumber << "\n";
 
-    std::array<T, numDim> dim;
-    int dims[numDim] = { 0, 0, 0 };
-    for (int i = 0; i < numDim, ++i) {
-        dataIfstream.read(reinterpret_cast<char*>(&(dims[i])), sizeof(numImages));
+    constexpr int numDim = std::is_same_v<T, int> ? 1 : 3;
+    std::array<uint32_t, numDim> dim;
+    int dims[numDim];
+    for (int i = 0; i < numDim; ++i) {
+        dataIfstream.read(reinterpret_cast<char*>(&(dims[i])), sizeof(uint32_t));
         dims[i] = swapEndian(dims[i]);
         std::cout << "Dim" << i << ": " << dims[i] << "\n";
     }
@@ -363,10 +426,15 @@ CUPMatrix<T> readIdxXubyte(const std::string& dataFile) {
         }
     }
 
-    // Print out statistics and show the 40th image.
+    CUPMatrix mat;
+    if constexpr (numDim == 1) {
+        mat = CUPMatrix{ cpuData, dim[0], 1 };
+    }
+    else {
+        mat = CUPMatrix{ cpuData, dim[0], dim[1] * dim[2] };
+    }
 
-    return CUPMatrix<T>{ cpuData, totalElements };
-
+    return mat;
 }
 
 namespace _testEig {
@@ -386,6 +454,7 @@ class MLP {
 
 public:
     MLP(CUPMatrix<float>& x, CUPMatrix<int>& y, size_t hiddenSize, int batchSize, float lr, int epochs) {
+
         size_t inputSize = x.cols;
         auto d_begin = thrust::device_pointer_cast(y.data);
         auto d_end = thrust::device_pointer_cast(y.end());
@@ -426,10 +495,11 @@ public:
 #ifdef EVAL_EPOCH
             x.setView(0, x.raiiRows());
             y.setView(0, y.raiiRows());
-            evalEpoch(x, epoch);
+            evalEpoch(x, y, epoch);
 #endif
         }
     }
+
 
     /*
     input: all training data
@@ -438,14 +508,14 @@ public:
     */
     void forward(const CUPMatrix<float>& x) {
 #ifdef COMPARE_MLP_WITH_EIGEN
-        EigenMatrix batchEig = _testEig::fromCUPMatrix(x);
-        EigenMatrix weight_1Eig = _testEig::fromCUPMatrix(weight_1);
+        EigenMatrix batchEig = _testEig::fromCUPMatrix<float>(x);
+        EigenMatrix weight_1Eig = _testEig::fromCUPMatrix<float>(weight_1);
         EigenRowVectorf bias_1Eig = _testEig::fromCUPVector(bias_1);
         EigenMatrix z1Eig = (batchEig * weight_1Eig).rowwise() + bias_1Eig;
 
         EigenMatrix a1Eig = _testEig::relu(z1Eig);
 
-        EigenMatrix weight_2Eig = _testEig::fromCUPMatrix(weight_2);
+        EigenMatrix weight_2Eig = _testEig::fromCUPMatrix<float>(weight_2);
         EigenRowVectorf bias_2Eig = _testEig::fromCUPVector(bias_2);
         EigenMatrix z2Eig = (a1Eig * weight_2Eig).rowwise() + bias_2Eig;
 
@@ -455,22 +525,20 @@ public:
         z1.gemm(x, weight_1, 1.f, 1.f);
 
         a1 = z1;
-        int blocks = (a1.size() + BLOCK_DIM - 1) / BLOCK_DIM;
-        relu << <blocks, BLOCK_DIM >> > (a1.data, a1.size());
-        cudaDeviceSynchronize();
+        a1.relu();
 
         //z2 = (a1 * weight_2) +(rowWise) bias_2;
         z2.dup_rows(bias_2);
         z2.gemm(a1, weight_2, 1.f, 1.f);
 
         a2 = z2;
-        softmax(a2);
+        a2.softmax();
 
 #ifdef COMPARE_MLP_WITH_EIGEN
-        EigenMatrix z1Cmp = _testEig::fromMlp(z1);
-        EigenMatrix a1Cmp = _testEig::fromMlp(a1);
-        EigenMatrix z2Cmp = _testEig::fromMlp(z2);
-        EigenMatrix a2Cmp = _testEig::fromMlp(a2);
+        EigenMatrix z1Cmp = _testEig::fromCUPMatrix<float>(z1);
+        EigenMatrix a1Cmp = _testEig::fromCUPMatrix<float>(a1);
+        EigenMatrix z2Cmp = _testEig::fromCUPMatrix<float>(z2);
+        EigenMatrix a2Cmp = _testEig::fromCUPMatrix<float>(a2);
 
         _testEig::cmpMat(z1Cmp, z1Eig);
         _testEig::cmpMat(a1Cmp, a1Eig);
@@ -484,144 +552,174 @@ public:
     startRow: this batch begins at startRow
     batchRows: this batch ends at endRow = startRow + batchSize
     */
-    void backward(const CUPMatrix<float>& batch, const CUPMatrix<int>& labels, float lr) {
-        float divM = 1.f / batch.rows;
+    void backward(const CUPMatrix<float>& batchX, const CUPMatrix<int>& batchY, float lr) {
+        float divM = 1.f / batchX.rows;
 #ifdef COMPARE_MLP_WITH_EIGEN
-        EigenMatrix y_one_hotEig = _testEig::one_hot(batchY, a2.cols); // a2.cols = outputSize
+        //EigenMatrix batchYEig = _testEig::fromCUPMatrix<int>(batchY); // note int->float
+        EigenMatrix batchYEig{ batchY.rows, batchY.cols };
+        assert(false, "fix batchYEig");
+        EigenMatrix y_one_hotEig = _testEig::one_hot(batchYEig, a2.cols); // a2.cols = outputSize
 
-        EigenMatrix a2Eig = _testEig::fromMlp(a2);
+        EigenMatrix a2Eig = _testEig::fromCUPMatrix<float>(a2);
         EigenMatrix dL_dz2Eig = a2Eig - y_one_hotEig;
 
-        EigenMatrix a1Eig = _testEig::fromMlp(a1);
+        EigenMatrix a1Eig = _testEig::fromCUPMatrix<float>(a1);
         EigenMatrix dL_dW2Eig = (a1Eig.transpose() * dL_dz2Eig) * divM;
 
-        EigenMatrix weight_2Eig = _testEig::fromMlp(weight_2);
+        EigenMatrix weight_2Eig = _testEig::fromCUPMatrix<float>(weight_2);
         weight_2Eig -= lr * dL_dW2Eig;
 
         EigenMatrix dL_db2Eig = dL_dz2Eig.colwise().sum() * divM;
 
-        EigenMatrix bias_2Eig = _testEig::fromMlp(bias_2);
+        EigenMatrix bias_2Eig = _testEig::fromCUPMatrix<float>(bias_2);
         bias_2Eig -= lr * dL_db2Eig;
 
         EigenMatrix dL_da1Eig = dL_dz2Eig * weight_2Eig.transpose();
 
-        EigenMatrix z1Eig = _testEig::fromMlp(z1);
-        EigenMatrix dL_dz1Eig = (dL_da1Eig.array() * (z1Eig.array() > 0).cast<real_t>()).matrix();
+        EigenMatrix z1Eig = _testEig::fromCUPMatrix<float>(z1);
+        EigenMatrix dL_dz1Eig = (dL_da1Eig.array() * (z1Eig.array() > 0).cast<float>()).matrix();
 
-        EigenMatrix batchXEig = _testEig::fromMlp(batchX);
+        EigenMatrix batchXEig = _testEig::fromCUPMatrix<float>(batchX);
         EigenMatrix dL_dW1Eig = (batchXEig.transpose() * dL_dz1Eig) * divM;
 
-        EigenMatrix weight_1Eig = _testEig::fromMlp(weight_1);
+        EigenMatrix weight_1Eig = _testEig::fromCUPMatrix<float>(weight_1);
         weight_1Eig -= lr * dL_dW1Eig;
 
         EigenMatrix dL_db1Eig = dL_dz1Eig.colwise().sum() * divM;
 
-        EigenMatrix bias_1Eig = _testEig::fromMlp(bias_1);
+        EigenMatrix bias_1Eig = _testEig::fromCUPMatrix<float>(bias_1);
         bias_1Eig -= lr * dL_db1Eig;
 #endif // COMPARE_MLP_WITH_EIGEN
-        y_one_hot.one_hot(batchY);
+        int outputSize = a2.cols;
+        y_one_hot.oneHot(batchY, outputSize);
 
         // 2. Compute gradient at output layer:
         // dL_dz2 = a2 - y_one_hot;
         dL_dz2 = a2;
-        cblas_saxpy(     // y = y + alpha * x
-            dL_dz2.size32(), //n
-            -1.0f,		 //alpha
-            y_one_hot.data32(), //x
-            1,			//incx
-            dL_dz2.data32(),    //y
-            1			//incy
+        float alpha = -1.f;
+        CUBLAS_CHECK(
+            cublasSaxpy(     // y = y + alpha * x
+                CublasHandle::get(),
+                dL_dz2.size(), //n
+                &alpha,		 //alpha
+                y_one_hot.data, //x
+                1,			//incx
+                dL_dz2.data,    //y
+                1			//incy
+            )
         );
 
         // 3. Gradients for the second (output) layer:
-        dL_dW2.gemm<MlpATrans>(a1, dL_dz2, divM);
+        dL_dW2.gemm<CUPATrans>(a1, dL_dz2, divM);
 
         // weight_2 -= lr * dL_dW2
-        cblas_saxpy( // y = y + alpha * x
-            dL_dW2.size32(), // x.size
-            -lr,			 // alpha
-            dL_dW2.data32(), // x
-            1,				 // incx
-            weight_2.data32(), // y
-            1);				 // incy
+        alpha = -lr;
+
+        CUBLAS_CHECK(
+            cublasSaxpy( // y = y + alpha * x
+                CublasHandle::get(),
+                dL_dW2.size(), // x.size
+                &alpha,			 // alpha
+                dL_dW2.data,     // x
+                1,				 // incx
+                weight_2.data,// y
+                1 // incy
+            )
+        );
 
         // dL_db2 = dL_dz2.colwise().sum() * dimM
-        MlpMatrix ones(1, dL_dz2.rows, 1.f);
+        CUPMatrix<float> ones{ 1, dL_dz2.rows, 1.f };
         dL_db2.gemm(ones, dL_dz2, divM); // gemv could be faster
 
         // bias_2 -= lr * dL_db2
-        cblas_saxpy(		 // y = y + alpha * x
-            dL_db2.size32(), // x.size
-            -lr,			 // alpha
-            dL_db2.data32(), // x
-            1,				 // incx
-            bias_2.data32(), // y
-            1);				 // incy
+        alpha = -lr;
+        CUBLAS_CHECK(
+            cublasSaxpy(		 // y = y + alpha * x
+                CublasHandle::get(),
+                dL_db2.size(), // x.size
+                &alpha,			 // alpha
+                dL_db2.data, // x
+                1,				 // incx
+                bias_2.data, // y
+                1 				 // incy
+            )
+        );
 
         // 4. Backpropagate to the hidden layer:
-        dL_da1.gemm<MlpBTrans>(dL_dz2, weight_2);
+        dL_da1.gemm<CUPBTrans>(dL_dz2, weight_2);
 
         dL_dz1 = dL_da1;
-        dL_dz1.positive_mask(z1);
+        dL_dz1.positiveMask(z1);
 
         // 5. Gradients for the first (hidden) layer:
-        dL_dW1.gemm<MlpATrans>(batchX, dL_dz1, divM);
+        dL_dW1.gemm<CUPATrans>(batchX, dL_dz1, divM);
 
         // weight_1 -= lr * dL_dW1
-        cblas_saxpy( // y = y + alpha * x
-            dL_dW1.size32(), // x.size
-            -lr,			 // alpha
-            dL_dW1.data32(), // x
-            1,				 // incx
-            weight_1.data32(), // y
-            1);				 // incy
+        alpha = -lr;
+        CUBLAS_CHECK(
+            cublasSaxpy( // y = y + alpha * x
+                CublasHandle::get(),
+                dL_dW1.size(), // x.size
+                &alpha,			 // alpha
+                dL_dW1.data,// x
+                1,				 // incx
+                weight_1.data, // y
+                1 				 // incy
+            )
+        );
 
 
         // dL_db1 = dL_dz1.colwise().sum() * divM
-        ones = MlpMatrix(1, dL_dz1.rows, 1.f);
+        ones = CUPMatrix<float>{ 1, dL_dz1.rows, 1.f };
         dL_db1.gemm(ones, dL_dz1, divM); // gemv could be faster
 
         //bias_1 -= lr * dL_db1
-        cblas_saxpy(		 // y = y + alpha * x
-            dL_db1.size32(), // x.size
-            -lr,			 // alpha
-            dL_db1.data32(), // x
-            1,				 // incx
-            bias_1.data32(), // y
-            1);				 // incy
+        alpha = -lr;
+        CUBLAS_CHECK(
+            cublasSaxpy(		 // y = y + alpha * x
+                CublasHandle::get(),
+                dL_db1.size(), // x.size
+                &alpha,			 // alpha
+                dL_db1.data, // x
+                1,				 // incx
+                bias_1.data, // y
+                1 				 // incy
+            )
+        );
 
 #ifdef COMPARE_MLP_WITH_EIGEN
-        EigenMatrix y_one_hotCmp = _testEig::fromMlp(y_one_hot);
+        EigenMatrix y_one_hotCmp = _testEig::fromCUPMatrix<float>(y_one_hot);
         _testEig::cmpMat(y_one_hotCmp, y_one_hotEig);
-        EigenMatrix dL_dz2Cmp = _testEig::fromMlp(dL_dz2);
+        EigenMatrix dL_dz2Cmp = _testEig::fromCUPMatrix<float>(dL_dz2);
         _testEig::cmpMat(dL_dz2Cmp, dL_dz2Eig);
-        EigenMatrix dL_dW2Cmp = _testEig::fromMlp(dL_dW2);
+        EigenMatrix dL_dW2Cmp = _testEig::fromCUPMatrix<float>(dL_dW2);
         _testEig::cmpMat(dL_dW2Cmp, dL_dW2Eig);
-        EigenMatrix weight_2Cmp = _testEig::fromMlp(weight_2);
+        EigenMatrix weight_2Cmp = _testEig::fromCUPMatrix<float>(weight_2);
         _testEig::cmpMat(weight_2Cmp, weight_2Eig);
-        EigenMatrix dL_db2Cmp = _testEig::fromMlp(dL_db2);
+        EigenMatrix dL_db2Cmp = _testEig::fromCUPMatrix<float>(dL_db2);
         _testEig::cmpMat(dL_db2Cmp, dL_db2Eig);
-        EigenMatrix bias_2Cmp = _testEig::fromMlp(bias_2);
+        EigenMatrix bias_2Cmp = _testEig::fromCUPMatrix<float>(bias_2);
         _testEig::cmpMat(bias_2Cmp, bias_2Eig);
-        EigenMatrix dL_da1Cmp = _testEig::fromMlp(dL_da1);
+        EigenMatrix dL_da1Cmp = _testEig::fromCUPMatrix<float>(dL_da1);
         _testEig::cmpMat(dL_da1Cmp, dL_da1Eig);
-        EigenMatrix dL_dz1Cmp = _testEig::fromMlp(dL_dz1);
+        EigenMatrix dL_dz1Cmp = _testEig::fromCUPMatrix<float>(dL_dz1);
         _testEig::cmpMat(dL_dz1Cmp, dL_dz1Eig);
-        EigenMatrix dL_dW1Cmp = _testEig::fromMlp(dL_dW1);
+        EigenMatrix dL_dW1Cmp = _testEig::fromCUPMatrix<float>(dL_dW1);
         _testEig::cmpMat(dL_dW1Cmp, dL_dW1Eig);
-        EigenMatrix weight_1Cmp = _testEig::fromMlp(weight_1);
+        EigenMatrix weight_1Cmp = _testEig::fromCUPMatrix<float>(weight_1);
         _testEig::cmpMat(weight_1Cmp, weight_1Eig);
-        EigenMatrix dL_db1Cmp = _testEig::fromMlp(dL_db1);
+        EigenMatrix dL_db1Cmp = _testEig::fromCUPMatrix<float>(dL_db1);
         _testEig::cmpMat(dL_db1Cmp, dL_db1Eig);
-        EigenMatrix bias_1Cmp = _testEig::fromMlp(bias_1);
+        EigenMatrix bias_1Cmp = _testEig::fromCUPMatrix<float>(bias_1);
         _testEig::cmpMat(bias_1Cmp, bias_1Eig);
 #endif
     }
 
-    void evalEpoch(const CUPMatrix<float> x, int epoch) {
+    void evalEpoch(const CUPMatrix<float>& x, const CUPMatrix<int>& y, int epoch) {
         std::cout << "evalEpoch not implemented\n";
-        //float epsilon = 1.0e-6F;
-        //forward(); // output is in `a2` member var
+        float epsilon = 1.0e-6F;
+        forward(x); // output is in `a2` member var
+
         //__m256 epoch_loss = _mm256_setzero_ps();
         //size_t outSize = a2.cols;
         //int batchSize = a2.rows;
@@ -649,17 +747,26 @@ public:
 
 
 #ifdef COMPARE_MLP_WITH_EIGEN
+        auto a2ptr = thrust::device_pointer_cast(a2.data);
+        //EigenMatrix yEig = _testEig::fromCUPMatrix<int>(y);
+        EigenMatrix yEig{ y.rows, y.cols };
+        assert(false, "fix above");
+        assert(yEig.cols() == 1);
         double epoch_lossEig = 0.0;
-        for (size_t row = 0; row < batchSize; ++row) {
-            float prob = *a2.data32(row, trainData.y.at32(trainData.y.gemmOffset + row));
+        for (size_t row = 0; row < a2.rows; ++row) {
+            auto elptr = a2ptr + row * a2.cols + yEig(row, 0);
+            assert(elptr.get() < a2.end());
+            float prob = *elptr;
             prob += epsilon; // against log(0)
             epoch_lossEig += std::log(prob);
         }
-        epoch_lossEig /= -batchSize;
-        float lastLoss = losses.back();
-        if (std::fabsf(epoch_lossEig - lastLoss) > 0.001f) {
-            throw std::runtime_error("wrong loss");
-        }
+        epoch_lossEig /= -a2.rows;
+        std::cout << (epoch + 1) << "\t" << epoch_lossEig << std::endl;
+
+        //float lastLoss = losses.back();
+        //if (std::fabsf(epoch_lossEig - lastLoss) > 0.001f) {
+        //    throw std::runtime_error("wrong loss");
+        //}
 #endif // COMPARE_MLP_WITH_EIGEN
 
     }
@@ -668,7 +775,7 @@ public:
         forward(testX);
 
         std::vector<int> predictions{ testX.rows, 1 };
-        EigenMatrix a2Eig = _testEig::fromCUPMatrix(a2);
+        EigenMatrix a2Eig = _testEig::fromCUPMatrix<float>(a2);
         for (int i = 0; i < a2Eig.rows(); ++i) {
             int maxIndex;
             a2Eig.row(i).maxCoeff(&maxIndex);
@@ -705,12 +812,13 @@ public:
 /* Eigen implementations for comparisons with my implementations */
 namespace _testEig {
 
-    EigenMatrix fromCUPMatrix(const CUPMatrix<float>& cup) {
-        std::vector<float> cpuVec = cup.cpyFromDevice();
+    template <typename T>
+    EigenMatrix fromCUPMatrix(const CUPMatrix<T>& cup) {
+        std::vector<T> cpuVec = cup.cpyFromDevice();
         EigenMatrix eig = EigenMatrix(cup.rows, cup.cols);
         for (int row = 0; row < cup.rows; ++row) {
             for (int col = 0; col < cup.cols; ++col) {
-                eig(row, col) = cpuVec[row * cup.cols + col];
+                eig(row, col) = float(cpuVec[row * cup.cols + col]);
             }
 
         }
@@ -725,9 +833,10 @@ namespace _testEig {
         }
         return eig;
     }
+
     EigenMatrix relu(const EigenMatrix& x) {
-        return x.array().max(0.0).matrix();
-    };
+        return x.cwiseMax(0.0);
+    }
 
     EigenMatrix softmax(const EigenMatrix& x) {
         EigenMatrix rowMax = x.rowwise().maxCoeff();
@@ -736,7 +845,7 @@ namespace _testEig {
         EigenVectorf rowSum = exp_x.rowwise().sum();
         EigenMatrix sm = exp_x.array().colwise() / rowSum.array();
         return sm;
-    };
+    }
 
     EigenMatrix one_hot(const EigenMatrix& y, int maxVal) {
         assert(y.cols() == 1);
@@ -747,16 +856,16 @@ namespace _testEig {
             y_one_hot(i, label) = 1.0f;
         }
         return y_one_hot;
-    };
+    }
 
     EigenMatrix dup_rows(const EigenMatrix& x, const EigenRowVectorf& y) {
         assert(x.cols() == y.cols());
         return x.rowwise() + y;
-    };
+    }
 
     EigenMatrix positive_mask(const EigenMatrix& data, const EigenMatrix& mask) {
         return (data.array() * (mask.array() > 0).cast<float>()).matrix();
-    };
+    }
 
     void cmpMat(const EigenMatrix& a, const EigenMatrix& b) {
         if (a.isApprox(b)) {
@@ -794,10 +903,8 @@ namespace _testEig {
 
 }
 
-
 //// ^TESTEIGEN
 ///////////////////////////////////////////////////
-
 
 bool nextPermute(std::vector<int>& in, std::vector<int>& out) {
 
@@ -811,21 +918,18 @@ bool nextPermute(std::vector<int>& in, std::vector<int>& out) {
     return std::next_permutation(in.begin(), in.end());
 }
 
-
-
-
 void test_gemm(int m, int n, int k) {
     // Test 1: MlpNoneTrans with multi-dim aMatrix
     {
-        MlpMatrix mata = MlpMatrix::Random(m, k * 8, -5.f, 5.f);
-        MlpMatrix matb = MlpMatrix::Random(k * 8, n * 8, -5.f, 5.f);
-        MlpMatrix matc = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
-        matc.gemm<MlpNoneTrans>(mata, matb, 1.f);
+        CUPMatrix<float> mata = CUPMatrix<float>::Random(m, k * 8, -5.f, 5.f);
+        CUPMatrix<float> matb = CUPMatrix<float>::Random(k * 8, n * 8, -5.f, 5.f);
+        CUPMatrix<float> matc = CUPMatrix<float>::Random(m, n * 8, -5.f, 5.f);
+        matc.gemm<CUPNoneTrans>(mata, matb, 1.f);
 
-        EigenMatrix eigA = _testEig::fromMlp(mata);
-        EigenMatrix eigB = _testEig::fromMlp(matb);
+        EigenMatrix eigA = _testEig::fromCUPMatrix(mata);
+        EigenMatrix eigB = _testEig::fromCUPMatrix(matb);
         EigenMatrix eigCmp = eigA * eigB;
-        EigenMatrix mlpCmp = _testEig::fromMlp(matc);
+        EigenMatrix mlpCmp = _testEig::fromCUPMatrix(matc);
 
         _testEig::cmpMat(eigCmp, mlpCmp);
     }
@@ -833,45 +937,45 @@ void test_gemm(int m, int n, int k) {
 
     // Test 3: MlpATrans
     {
-        MlpMatrix mata = MlpMatrix::Random(k, m * 8, -5.f, 5.f);
-        MlpMatrix matb = MlpMatrix::Random(k, n * 8, -5.f, 5.f);
-        MlpMatrix matc = MlpMatrix::Random(m * 8, n * 8, -5.f, 5.f);
-        matc.gemm<MlpATrans>(mata, matb, 1.f);
+        CUPMatrix<float> mata = CUPMatrix<float>::Random(k, m * 8, -5.f, 5.f);
+        CUPMatrix<float> matb = CUPMatrix<float>::Random(k, n * 8, -5.f, 5.f);
+        CUPMatrix<float> matc = CUPMatrix<float>::Random(m * 8, n * 8, -5.f, 5.f);
+        matc.gemm<CUPATrans>(mata, matb, 1.f);
 
-        EigenMatrix eigA = _testEig::fromMlp(mata).transpose();
-        EigenMatrix eigB = _testEig::fromMlp(matb);
+        EigenMatrix eigA = _testEig::fromCUPMatrix(mata).transpose();
+        EigenMatrix eigB = _testEig::fromCUPMatrix(matb);
         EigenMatrix eigCmp = eigA * eigB;
-        EigenMatrix mlpCmp = _testEig::fromMlp(matc);
+        EigenMatrix mlpCmp = _testEig::fromCUPMatrix(matc);
 
         _testEig::cmpMat(eigCmp, mlpCmp);
     }
 
     // Test 5: MlpBTrans with multi-dim aMatrix
     {
-        MlpMatrix mata = MlpMatrix::Random(m, k * 8, -5.f, 5.f);
-        MlpMatrix matb = MlpMatrix::Random(n * 8, k * 8, -5.f, 5.f);
-        MlpMatrix matc = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
-        matc.gemm<MlpBTrans>(mata, matb, 1.f);
+        CUPMatrix<float> mata = CUPMatrix<float>::Random(m, k * 8, -5.f, 5.f);
+        CUPMatrix<float> matb = CUPMatrix<float>::Random(n * 8, k * 8, -5.f, 5.f);
+        CUPMatrix<float> matc = CUPMatrix<float>::Random(m, n * 8, -5.f, 5.f);
+        matc.gemm<CUPBTrans>(mata, matb, 1.f);
 
-        EigenMatrix eigA = _testEig::fromMlp(mata);
-        EigenMatrix eigB = _testEig::fromMlp(matb).transpose();
+        EigenMatrix eigA = _testEig::fromCUPMatrix(mata);
+        EigenMatrix eigB = _testEig::fromCUPMatrix(matb).transpose();
         EigenMatrix eigCmp = eigA * eigB;
-        EigenMatrix mlpCmp = _testEig::fromMlp(matc);
+        EigenMatrix mlpCmp = _testEig::fromCUPMatrix(matc);
 
         _testEig::cmpMat(eigCmp, mlpCmp);
     }
 
     // Test 7: (MlpATrans | MlpBTrans) with multi-dim aMatrix
     {
-        MlpMatrix mata = MlpMatrix::Random(k * 8, m * 8, -5.f, 5.f);
-        MlpMatrix matb = MlpMatrix::Random(n * 8, k * 8, -5.f, 5.f);
-        MlpMatrix matc = MlpMatrix::Random(m * 8, n * 8, -5.f, 5.f);
-        matc.gemm<MlpABTrans>(mata, matb, 1.f);
+        CUPMatrix<float> mata = CUPMatrix<float>::Random(k * 8, m * 8, -5.f, 5.f);
+        CUPMatrix<float> matb = CUPMatrix<float>::Random(n * 8, k * 8, -5.f, 5.f);
+        CUPMatrix<float> matc = CUPMatrix<float>::Random(m * 8, n * 8, -5.f, 5.f);
+        matc.gemm<CUPABTrans>(mata, matb, 1.f);
 
-        EigenMatrix eigA = _testEig::fromMlp(mata).transpose();
-        EigenMatrix eigB = _testEig::fromMlp(matb).transpose();
+        EigenMatrix eigA = _testEig::fromCUPMatrix(mata).transpose();
+        EigenMatrix eigB = _testEig::fromCUPMatrix(matb).transpose();
         EigenMatrix eigCmp = eigA * eigB;
-        EigenMatrix mlpCmp = _testEig::fromMlp(matc);
+        EigenMatrix mlpCmp = _testEig::fromCUPMatrix(matc);
 
         _testEig::cmpMat(eigCmp, mlpCmp);
     }
@@ -879,10 +983,10 @@ void test_gemm(int m, int n, int k) {
 
 void test_relu(int m, int n) {
     n *= 8;
-    MlpMatrix mlp = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
-    EigenMatrix eig = _testEig::fromMlp(mlp);
-    relu(mlp);
-    EigenMatrix mlpCmp = _testEig::fromMlp(mlp);
+    CUPMatrix<float> mlp = CUPMatrix<float>::Random(m, n * 8, -5.f, 5.f);
+    EigenMatrix eig = _testEig::fromCUPMatrix(mlp);
+    mlp.relu();
+    EigenMatrix mlpCmp = _testEig::fromCUPMatrix(mlp);
     EigenMatrix eigCmp = _testEig::relu(eig);
 
     _testEig::cmpMat(eigCmp, mlpCmp);
@@ -890,11 +994,11 @@ void test_relu(int m, int n) {
 void test_softmax(int m, int n) {
 
     n *= 8;
-    MlpMatrix mlp = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
-    EigenMatrix eig = _testEig::fromMlp(mlp);
+    CUPMatrix<float> mlp = CUPMatrix<float>::Random(m, n * 8, -5.f, 5.f);
+    EigenMatrix eig = _testEig::fromCUPMatrix(mlp);
 
-    softmax(mlp);
-    EigenMatrix mlpCmp = _testEig::fromMlp(mlp);
+    mlp.softmax();
+    EigenMatrix mlpCmp = _testEig::fromCUPMatrix(mlp);
     EigenMatrix eigCmp = _testEig::softmax(eig);
 
     _testEig::cmpMat(eigCmp, mlpCmp);
@@ -902,26 +1006,27 @@ void test_softmax(int m, int n) {
 void test_one_hot(int m, int n) {
 
     n *= 8;
-    MlpMatrix mlp = MlpMatrix(m * 8, n * 8);
+    CUPMatrix<float> mlp = CUPMatrix<float>(m * 8, n * 8);
     EigenMatrix eig = EigenMatrix(m * 8, n * 8);
 
-    MlpVector<__m256i> y = MlpVector<__m256i>::Random(m * 8, 0, n * 8 - 1);
+    CUPMatrix<int> y = CUPMatrix<int>::Random(m * 8, 1, 0, n * 8 - 1);
+    EigenMatrix yEig = _testEig::fromCUPMatrix(y);
     int outputSize = n * 8; // ensure one_hot produces correct cols
-    mlp.one_hot(y);
-    EigenMatrix mlpCmp = _testEig::fromMlp(mlp);
-    EigenMatrix eigCmp = _testEig::one_hot(y, outputSize);
+    mlp.oneHot(y, outputSize);
+    EigenMatrix mlpCmp = _testEig::fromCUPMatrix(mlp);
+    EigenMatrix eigCmp = _testEig::one_hot(yEig, outputSize);
 
     _testEig::cmpMat(eigCmp, mlpCmp);
 }
 void test_dup_rows(int m, int n) {
     n *= 8;
-    MlpMatrix mlp = MlpMatrix::Random(m, n * 8, 0.f, 0.f);
-    EigenMatrix eig = _testEig::fromMlp(mlp);
+    CUPMatrix<float> mlp = CUPMatrix<float>::Random(m, n * 8, 0.f, 0.f);
+    EigenMatrix eig = _testEig::fromCUPMatrix(mlp);
 
-    MlpVector<__m256> y = MlpVector<__m256>::Random(n * 8, -5.f, 5.f);
-    EigenRowVectorf eigY = _testEig::fromMlp(y);
+    CUPMatrix<float> y = CUPMatrix<float>::Random(n * 8, 1, -5.f, 5.f);
+    EigenRowVectorf eigY = _testEig::fromCUPMatrix(y);
     mlp.dup_rows(y);
-    EigenMatrix mlpCmp = _testEig::fromMlp(mlp);
+    EigenMatrix mlpCmp = _testEig::fromCUPMatrix(mlp);
     EigenMatrix eigCmp = _testEig::dup_rows(eig, eigY);
 
     _testEig::cmpMat(eigCmp, mlpCmp);
@@ -930,13 +1035,13 @@ void test_dup_rows(int m, int n) {
 
 void test_positive_mask(int m, int n) {
     n *= 8;
-    MlpMatrix mlp = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
-    MlpMatrix mlpMask = MlpMatrix::Random(m, n * 8, -5.f, 5.f);
-    EigenMatrix eig = _testEig::fromMlp(mlp);
-    EigenMatrix eigMask = _testEig::fromMlp(mlpMask);
+    CUPMatrix<float> mlp = CUPMatrix<float>::Random(m, n * 8, -5.f, 5.f);
+    CUPMatrix<float> mlpMask = CUPMatrix<float>::Random(m, n * 8, -5.f, 5.f);
+    EigenMatrix eig = _testEig::fromCUPMatrix(mlp);
+    EigenMatrix eigMask = _testEig::fromCUPMatrix(mlpMask);
 
-    mlp.positive_mask(mlpMask);
-    EigenMatrix mlpCmp = _testEig::fromMlp(mlp);
+    mlp.positiveMask(mlpMask);
+    EigenMatrix mlpCmp = _testEig::fromCUPMatrix(mlp);
     EigenMatrix eigCmp = _testEig::positive_mask(eig, eigMask);
 
     _testEig::cmpMat(eigCmp, mlpCmp);
@@ -974,30 +1079,28 @@ int main() {
     CUPMatrix<int> testY = readIdxXubyte<int>("assets.ignored/t10k-labels.idx1-ubyte");
 
     const size_t hiddenSize = 128;
-    int miniBatchSize = 128;
-    MLP mlp{ x, y, hiddenSize, miniBatchSize, 0.01f };
+    int batchSize = 128;
+    float lr = 0.01f;
+    int epochs = 10;
 
     Time begin = getTime();
-
-    int epochs = 10;
-    mlp.train(epochs);
-    MlpVector<__m256i> predictions = mlp.predict(testData.x);
-
-    //double accuracy = (predictions.array() == testData.labels.array()).cast<double>().mean();
-    __m256i acc = _mm256_setzero_si256();
-    for (int i = 0; i < predictions.size256(); ++i) {
-
-        __m256i mask = _mm256_cmpeq_epi32(predictions.at256(i), testData.y.at256(i));
-        __m256i ones = _mm256_srli_epi32(mask, 31); // >> 31 for each 32-bit element
-        acc = _mm256_add_epi32(acc, ones);
-    }
-
-    std::cout << "Test Accuracy: " << sum256i(acc) / float(testData.y.gemmRows) << std::endl;
-
+    MLP mlp{ x, y, hiddenSize, batchSize, lr, epochs };
     Seconds elapsed = getTime() - begin;
-    std::cout << "benchmark: " << elapsed;
+    std::cout << "training time: " << elapsed;
 
+    std::vector<int> predictions = mlp.predict(testX);
+    EigenMatrix testYEig = _testEig::fromCUPMatrix(testY);
+    assert(predictions.size() == testYEig.rows() && testYEig.cols() == 1);
 
+    float acc = 0;
+    for (int i = 0; i < predictions.size(); ++i) {
+        if (predictions[i] == testYEig[i]) {
+            ++acc;
+        }
+    }
+    std::cout << "Test Accuracy: " << acc / float(predictions.size()) << std::endl;
+
+    CublasHandle::free();
     return 0;
 }
 
