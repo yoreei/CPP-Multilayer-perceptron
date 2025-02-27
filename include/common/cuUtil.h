@@ -63,7 +63,7 @@ T* cuAllocCpyFromHost(const std::vector<T>& h_vector) {
 
 /* Copy data from device to host */
 template <typename T>
-void cuCpyFromDevice(std::vector<T>& h_vector, T* d_array) {
+void cuCpyFromDevice(std::vector<T>& h_vector, const T* d_array) {
     cudaError_t err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
         printf("Kernel execution failed: %s\n", cudaGetErrorString(err));
