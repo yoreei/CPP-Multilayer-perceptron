@@ -78,7 +78,7 @@ public:
     }
 
     CUPRAII(int size) : size(size) {
-        std::vector<T> cpuVec(size, 0xBADBAD); // TODO do this only in debug
+        std::vector<T> cpuVec(size, std::bit_cast<T>(0xBADDBADD)); // TODO do this only in debug
         ptr = cuAllocCpyFromHost(cpuVec);
     }
 
@@ -87,7 +87,7 @@ public:
 #ifdef __CUDA_ARCH__
         // do not free
 #else
-        free();
+        release();
 #endif
     }
     CUPRAII(const CUPRAII& rhs) : CUPRAII(rhs.size) {
@@ -99,7 +99,7 @@ public:
         size_t bytes = sizeof(T) * rhs.size;
         if (this->size != rhs.size) {
             std::cout << "reallocating CUPRAII\n";
-            free();
+            release();
             this->size = rhs.size;
             CU_CHECK(cudaMalloc(&ptr, bytes));
         }
@@ -107,7 +107,7 @@ public:
         return *this;
     }
 
-    __host__ void free() {
+    __host__ void release() {
         CU_CHECK(cudaFree(ptr));
         ptr = nullptr;
         size = 0;
@@ -123,15 +123,18 @@ enum CUPTransMask {
     CUPABTrans = 3,
 };
 
-/* non-owning type */
+/* non-owning type, used in Cuda kernels */
 template <typename T>
 struct PODMatrix {
-    int rows;
-    int cols;
-    T* data;
-    __host__ __device__ size_t get(int row, int col) {
+    int rows = 0;
+    int cols = 0;
+    T* data = nullptr;
+    __host__ size_t getIdx(int row, int col) {
         assert(row < rows && col < cols);
-        return data + row * cols + col;
+        return row * cols + col;
+    }
+    __device__ size_t d_getIdx(int row, int col) {
+        return row * cols + col;
     }
 
     __host__ __device__ T* end() {
@@ -139,33 +142,39 @@ struct PODMatrix {
     }
 
     __host__ __device__ int size() const {
-        assert(rows * cols <= raii.size);
+        //assert(rows * cols <= raii.size);
         return rows * cols;
     }
 
 };
 
-/* owning type */
+/* owning type, host only */
 template <typename T>
 struct CUPMatrix : public PODMatrix<T> {
+    using PODMatrix<T>::rows;
+    using PODMatrix<T>::cols;
+    using PODMatrix<T>::data;
+    using PODMatrix<T>::end;
+    using PODMatrix<T>::size;
+    using PODMatrix<T>::getIdx;
     CUPMatrix() = default;
-    __host__ CUPMatrix(const std::vector<T>& cpuVec, int rows, int cols) : rows(rows), cols(cols), raii(cpuVec) {
+    CUPMatrix(const std::vector<T>& cpuVec, int rows, int cols) : PODMatrix<T>{ rows, cols, nullptr }, raii(cpuVec) {
         if (rows * cols != cpuVec.size()) {
             throw std::runtime_error("wrong dims");
         }
         data = raii.ptr;
     }
-    __host__ CUPMatrix(int rows, int cols) : rows(rows), cols(cols), raii(rows* cols) {
+    CUPMatrix(int rows, int cols) : PODMatrix<T>{ rows, cols, nullptr }, raii(rows* cols) {
         data = raii.ptr;
     }
 
-    __host__ CUPMatrix(int rows, int cols, T val) : rows(rows), cols(cols) {
+    CUPMatrix(int rows, int cols, T val) : PODMatrix<T>{ rows, cols, nullptr } {
         std::vector<T> cpuVec(rows * cols, val);
         raii = CUPRAII{ cpuVec };
         data = raii.ptr;
     }
 
-    __host__ CUPMatrix(const CUPRAII<T>& raii, int rows, int cols) : raii(raii), rows(rows), cols(cols) {
+    CUPMatrix(const CUPRAII<T>& raii, int rows, int cols) : PODMatrix<T>{ rows, cols, nullptr }, raii(raii) {
         data = raii.ptr;
     }
 
@@ -180,37 +189,52 @@ struct CUPMatrix : public PODMatrix<T> {
 
         int diff = rhs.data - rhs.raii.ptr;
         data = raii.ptr + diff;
+        return *this;
     }
 
-    PODMatrix<T> getPod() {
+    const PODMatrix<T> getPod() const {
         return PODMatrix<T>(*this);
     }
 
-    __host__ static CUPMatrix<T> Random(int rows, int cols, T minVal, T maxVal) {
+    static CUPMatrix<T> Random(int rows, int cols, T minVal, T maxVal) {
         std::vector<T> ranVec(rows * cols, 0xBADBAD);
         randSeq(ranVec.begin(), ranVec.end(), minVal, maxVal);
         return CUPMatrix<T>(ranVec, rows, cols);
     }
 
-    __host__ std::vector<T> cpyFromDevice() const {
+    std::vector<T> cpyFromDevice() const {
         std::vector<T> cpuVec(rows * cols, 0xBADBAD);
         cuCpyFromDevice<T>(cpuVec, data);
         return cpuVec;
     }
 
-    __host__ void setView(int _rowOffset, int rowSpan) {
-        rowOffset = _rowOffset;
+    void setView(size_t _rowOffset, size_t rowSpan) {
+        if (_rowOffset + rowSpan > raiiRows()) {
+            throw std::runtime_error("wrong view");
+        }
+        data = raii.ptr + _rowOffset * cols;
         rows = rowSpan;
         assert(data >= raii.ptr && end() <= raii.ptr + raii.size);
     }
 
-    __host__ __device__ int raiiRows() const {
+    int getRowOffset() {
+        int diff = data - raii.ptr;
+        assert(diff % cols == 0);
+        return diff / cols;
+    }
+
+    const CUPRAII<T>& getRaii() const {
+        return raii;
+    }
+
+    int raiiRows() const {
         assert(raii.size % cols == 0);
         return raii.size / cols;
     }
 
     template <CUPTransMask transMask = CUPNoneTrans>
-    __host__ void gemm(const CUPMatrix<T>& aMatrix, const CUPMatrix<T>& bMatrix, float alpha = 1.f, float beta = 0.f) {
+    void gemm(const CUPMatrix<T>& aMatrix, const CUPMatrix<T>& bMatrix, float alpha = 1.f, float beta = 0.f) {
+
         float* C = data;
         const float* A = aMatrix.data;
         const float* B = bMatrix.data;
@@ -273,7 +297,9 @@ struct CUPMatrix : public PODMatrix<T> {
         }
 
         if (M != rows || N != cols) {
-            throw std::runtime_error("wrong C dim");
+            raii.release();
+            std::cout << "CUPMatrix<T>::gemm reallocate\n";
+            *this = CUPMatrix<T>{ M, N };
         }
 
         std::cout << "aTransOpt: " << aTransOpt << "\n"
@@ -317,13 +343,17 @@ struct CUPMatrix : public PODMatrix<T> {
     __host__ void positiveMask(const CUPMatrix<T>& mask) {
         assert(cols == mask.cols && rows == mask.rows);
         int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
-        cuPositiveMask << <blocks, BLOCK_DIM >> > (getPod(), getPod());
+        cuPositiveMask << <blocks, BLOCK_DIM >> > (getPod(), mask.getPod());
         cudaDeviceSynchronize();
     }
 
-    __host__ void dup_rows(const CUPMatrix<T>& row) {
+    __host__ void dup_rows(const CUPMatrix<T>& row, int numRows) {
         assert(row.cols == 1); // we are assuming a row vector here!
         // O(log n) memcpy calls
+        if (rows != numRows || cols != row.cols) {
+            raii.release();
+            *this = CUPMatrix<T>{ numRows, row.rows };
+        }
 
         if (row.size() != cols) {
             int _rowSize = row.size();
@@ -367,7 +397,7 @@ struct CUPMatrix : public PODMatrix<T> {
             throw std::runtime_error("unhardcode me");
         }
 
-        int blocks = (size() + BlockSize - 1) / BlockSize;
+        int blocks = rows;
         cuSoftmax<BlockSize> << <blocks, BlockSize >> > (getPod());
         cudaDeviceSynchronize();
     }
@@ -379,14 +409,15 @@ private:
 //BlockSize given as template because we need it to be constexpr
 template <int BlockSize>
 __global__ void cuSoftmax(PODMatrix<float> mat) {
+    assert(blockIdx.x < mat.rows);
     static_assert(BlockSize % 32 == 0); // BlockReduce requires multiple of warp size
     // Each block processes one row
     using BlockReduce = cub::BlockReduce<float, BlockSize>;
     __shared__ typename BlockReduce::TempStorage temp_storage;
     __shared__ float sync_reduce;
 
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    float thread_max = (idx < mat.size()) ? mat.data[idx] : mat.data[0];
+    int idx = mat.d_getIdx(blockIdx.x, threadIdx.x);
+    float thread_max = (threadIdx.x < mat.cols) ? mat.data[idx] : mat.data[0];
 
     // Only thread_0 in block has the correct result
     float block_max = BlockReduce(temp_storage).Reduce(thread_max, cub::Max());
@@ -398,12 +429,12 @@ __global__ void cuSoftmax(PODMatrix<float> mat) {
     block_max = sync_reduce;
     //^ sync block
 
-    if (idx < mat.size()) {
+    if (threadIdx.x < mat.cols) {
         mat.data[idx] -= block_max;
         mat.data[idx] = expf(mat.data[idx]);
     }
 
-    float thread_sum = (idx < mat.size()) ? mat.data[idx] : 0;
+    float thread_sum = (threadIdx.x < mat.cols) ? mat.data[idx] : 0;
     __syncthreads(); // required because of temp_storage reuse
     // Only thread_0 in block has the correct result
     float block_sum = BlockReduce(temp_storage).Reduce(thread_sum, cub::Sum());
@@ -415,7 +446,7 @@ __global__ void cuSoftmax(PODMatrix<float> mat) {
     block_sum = sync_reduce;
     //^ sync block
 
-    if (idx < mat.size()) {
+    if (threadIdx.x < mat.cols) {
         mat.data[idx] /= block_sum;
     }
 }
@@ -467,11 +498,10 @@ CUPMatrix<T> readIdxXubyte(const std::string& dataFile) {
 
     constexpr int numDim = std::is_same_v<T, int> ? 1 : 3;
     std::array<uint32_t, numDim> dim;
-    int dims[numDim];
     for (int i = 0; i < numDim; ++i) {
-        dataIfstream.read(reinterpret_cast<char*>(&(dims[i])), sizeof(uint32_t));
-        dims[i] = swapEndian(dims[i]);
-        std::cout << "Dim" << i << ": " << dims[i] << "\n";
+        dataIfstream.read(reinterpret_cast<char*>(&(dim[i])), sizeof(uint32_t));
+        dim[i] = swapEndian(dim[i]);
+        std::cout << "Dim" << i << ": " << dim[i] << "\n";
     }
 
     // Read data:
@@ -586,14 +616,14 @@ public:
 
         EigenMatrix a2Eig = _testEig::softmax(z2Eig);
 #endif // COMPARE_MLP_WITH_EIGEN
-        z1.dup_rows(bias_1);
+        z1.dup_rows(bias_1, x.rows);
         z1.gemm(x, weight_1, 1.f, 1.f);
 
         a1 = z1;
         a1.relu();
 
         //z2 = (a1 * weight_2) +(rowWise) bias_2;
-        z2.dup_rows(bias_2);
+        z2.dup_rows(bias_2, x.rows);
         z2.gemm(a1, weight_2, 1.f, 1.f);
 
         a2 = z2;
@@ -620,9 +650,7 @@ public:
     void backward(const CUPMatrix<float>& batchX, const CUPMatrix<int>& batchY, float lr) {
         float divM = 1.f / batchX.rows;
 #ifdef COMPARE_MLP_WITH_EIGEN
-        //EigenMatrix batchYEig = _testEig::fromCUPMatrix<int>(batchY); // note int->float
-        EigenMatrix batchYEig{ batchY.rows, batchY.cols };
-        assert(false); // unhardcode!
+        EigenMatrix batchYEig = _testEig::fromCUPMatrix<int>(batchY); // note int->float
         EigenMatrix y_one_hotEig = _testEig::one_hot(batchYEig, a2.cols); // a2.cols = outputSize
 
         EigenMatrix a2Eig = _testEig::fromCUPMatrix<float>(a2);
@@ -634,7 +662,7 @@ public:
         EigenMatrix weight_2Eig = _testEig::fromCUPMatrix<float>(weight_2);
         weight_2Eig -= lr * dL_dW2Eig;
 
-        EigenMatrix dL_db2Eig = dL_dz2Eig.colwise().sum() * divM;
+        EigenMatrix dL_db2Eig = (dL_dz2Eig.colwise().sum() * divM).transpose();
 
         EigenMatrix bias_2Eig = _testEig::fromCUPMatrix<float>(bias_2);
         bias_2Eig -= lr * dL_db2Eig;
@@ -650,7 +678,7 @@ public:
         EigenMatrix weight_1Eig = _testEig::fromCUPMatrix<float>(weight_1);
         weight_1Eig -= lr * dL_dW1Eig;
 
-        EigenMatrix dL_db1Eig = dL_dz1Eig.colwise().sum() * divM;
+        EigenMatrix dL_db1Eig = (dL_dz1Eig.colwise().sum() * divM).transpose();
 
         EigenMatrix bias_1Eig = _testEig::fromCUPMatrix<float>(bias_1);
         bias_1Eig -= lr * dL_db1Eig;
@@ -876,6 +904,11 @@ public:
 
 /* Eigen implementations for comparisons with my implementations */
 namespace _testEig {
+    void printEig(const EigenMatrix& mat, const std::string& name) {
+        int printPrecision = 3;
+        Eigen::IOFormat fmt(printPrecision, 0, ", ", "\n", "[", "]"); // up printPrecision if diff hard to spot
+        std::cerr << name << std::endl << mat.format(fmt) << std::endl;
+    }
 
     using ::EigenMatrix;
     template <typename T>
@@ -925,7 +958,7 @@ namespace _testEig {
     }
 
     EigenMatrix dup_rows(const EigenMatrix& x, const EigenMatrix& y) {
-        assert(x.cols() == y.cols() && y.cols() == 1); // we are assuming a rowvector here!
+        assert(x.cols() == y.rows() && y.cols() == 1); // we are assuming a rowvector here!
         return x.rowwise() + EigenRowVectorf(y.transpose());
     }
 
@@ -939,10 +972,8 @@ namespace _testEig {
         }
         else {
             std::cerr << "Test failed: matrices differ." << std::endl;
-            int printPrecision = 3;
-            Eigen::IOFormat fmt(printPrecision, 0, ", ", "\n", "[", "]"); // up printPrecision if diff hard to spot
-            std::cerr << "Matrix A:" << std::endl << a.format(fmt) << std::endl;
-            std::cerr << "Matrix B:" << std::endl << b.format(fmt) << std::endl;
+            printEig(a, "Matrix A");
+            printEig(b, "Matrix B");
             assert(false);
         }
     }
@@ -1000,7 +1031,6 @@ void test_gemm(int m, int n, int k) {
         EigenMatrix mlpCmp = _testEig::fromCUPMatrix<float>(matc);
 
         _testEig::cmpMat(eigCmp, mlpCmp);
-        std::cout << "Passed gemm A * B\n";
     }
 
 
@@ -1066,9 +1096,6 @@ void test_softmax(int m, int n) {
     int HARDCODED_COLS = 10;
     CUPMatrix<float> mlp = CUPMatrix<float>::Random(m, HARDCODED_COLS, -5.f, 5.f);
     EigenMatrix eig = _testEig::fromCUPMatrix<float>(mlp);
-    int printPrecision = 3;
-    Eigen::IOFormat fmt(printPrecision, 0, ", ", "\n", "[", "]"); // up printPrecision if diff hard to spot
-    std::cerr << "original:" << std::endl << eig.format(fmt) << std::endl;
 
     mlp.softmax();
     EigenMatrix mlpCmp = _testEig::fromCUPMatrix<float>(mlp);
@@ -1098,7 +1125,7 @@ void test_dup_rows(int m, int n) {
 
     CUPMatrix<float> row = CUPMatrix<float>::Random(n * 8, 1, -5.f, 5.f);
     EigenMatrix eigRow = _testEig::fromCUPMatrix<float>(row);
-    mlp.dup_rows(row);
+    mlp.dup_rows(row, mlp.rows);
     EigenMatrix mlpCmp = _testEig::fromCUPMatrix<float>(mlp);
     EigenMatrix eigCmp = _testEig::dup_rows(eig, eigRow);
 
@@ -1122,12 +1149,8 @@ void test_positive_mask(int m, int n) {
 
 void testRaii() {
     CUPMatrix<int> a{ 5,5, 1 };
-    int* aData1 = a.data;
     a = CUPMatrix<int>{ 6,6, 2 }; // expanding
-    assert(a.data != aData1);
-    int* aData2 = a.data;
     a = CUPMatrix<int>{ 4,4, 3 }; // shrinking
-    assert(a.data != aData2);
 
     CUPMatrix<int> b = a;
     assert(b.data != a.data); // deep copy (assignment)
@@ -1135,14 +1158,28 @@ void testRaii() {
     assert(copyCtor.data != a.data); // deep copy (copy ctor)
     PODMatrix<int> pod = a.getPod();
     assert(pod.data == a.data); // weakref copy
-    
-    a.setView(1, 2);
-    zzz test with view
 
+    a.setView(1, 2);
+    CUPMatrix<int> copyView1 = a;
+    assert(copyView1.getRowOffset() == 1);
+    assert(copyView1.rows == 2);
+    assert(copyView1.raiiRows() == 4);
+
+    CUPMatrix<int> copyView2(copyView1);
+    assert(copyView2.getRowOffset() == 1);
+    assert(copyView2.rows == 2);
+    assert(copyView2.raiiRows() == 4);
+
+    copyView2.setView(0, copyView2.raiiRows());
+    auto dataPtr = thrust::device_pointer_cast(copyView2.data);
+    assert(*dataPtr == 3);
+    auto endPtr = thrust::device_pointer_cast(copyView2.end() - 1);
+    assert(*endPtr == 3);
 }
 
 void testRun() {
     testRaii();
+    test_softmax(2, 10);
     std::vector<int> in, out;
     in = { 1,2,3,4,5 };
     out = std::vector<int>(2, 0);
@@ -1163,6 +1200,7 @@ void testRun() {
         int k = out[2];
         test_gemm(m, n, k);
     }
+    std::cout << "Passed all unit tests\n";
 }
 
 int main() {
