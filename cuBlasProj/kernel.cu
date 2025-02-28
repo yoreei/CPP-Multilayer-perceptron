@@ -1,5 +1,4 @@
-﻿#include "common/cppUtil.h"
-#include <string>
+﻿#include <string>
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -24,14 +23,17 @@
 #include <thrust/extrema.h>
 #include <cub/cub.cuh>
 
+#include "common/cppUtil.h"
 #include "common/cuUtil.h"
 #include "common/simdUtil.h"
 #include "common/cublasUtil.h"
 
+
 // define to compare my implementation with an eigen implementation (known to work) (slow)
-#define COMPARE_MLP_WITH_EIGEN
+#undef COMPARE_MLP_WITH_EIGEN
+#define COMPARE_MLP_WITH_EIGEN_EPOCH
 // compute loss function (slows down epochs)
-#define EVAL_EPOCH
+#undef EVAL_EPOCH
 
 /*
 CUP = Cuda (multilayer) Perceptron
@@ -57,6 +59,7 @@ public:
     static cublasHandle_t& get() {
         if (mustInit) {
             CUBLAS_CHECK(cublasCreate(&cublasHandle));
+            mustInit = false;
         }
         return cublasHandle;
     }
@@ -70,6 +73,7 @@ private:
     inline static cublasHandle_t cublasHandle;
 };
 
+/* host-only, owning class */
 template <typename T>
 class CUPRAII {
 public:
@@ -78,27 +82,30 @@ public:
     }
 
     CUPRAII(int size) : size(size) {
-        std::vector<T> cpuVec(size, std::bit_cast<T>(0xBADDBADD)); // TODO do this only in debug
-        ptr = cuAllocCpyFromHost(cpuVec);
+        if constexpr (DEBUG) {
+            std::vector<T> cpuVec(size, std::bit_cast<T>(0xBADDBADD)); // TODO do this only in debug
+            ptr = cuAllocCpyFromHost(cpuVec);
+        }
+        else {
+            int bytes = sizeof(T) * size;
+            CU_CHECK(cudaMalloc(&ptr, bytes));
+        }
     }
 
-    __host__ __device__
-        ~CUPRAII() {
-#ifdef __CUDA_ARCH__
-        // do not free
-#else
+    ~CUPRAII() {
         release();
-#endif
     }
     CUPRAII(const CUPRAII& rhs) : CUPRAII(rhs.size) {
+        std::cout << "CUPRAII copy ctor\n";
         size_t bytes = sizeof(T) * rhs.size;
         CU_CHECK(cudaMemcpy(ptr, rhs.ptr, bytes, cudaMemcpyDeviceToDevice));
     }
 
     CUPRAII& operator=(const CUPRAII& rhs) {
+        std::cout << "CUPRAII operator=\n";
         size_t bytes = sizeof(T) * rhs.size;
         if (this->size != rhs.size) {
-            std::cout << "reallocating CUPRAII\n";
+            std::cout << "CUPRAII operator= reallocating!\n";
             release();
             this->size = rhs.size;
             CU_CHECK(cudaMalloc(&ptr, bytes));
@@ -107,7 +114,7 @@ public:
         return *this;
     }
 
-    __host__ void release() {
+    void release() {
         CU_CHECK(cudaFree(ptr));
         ptr = nullptr;
         size = 0;
@@ -197,13 +204,13 @@ struct CUPMatrix : public PODMatrix<T> {
     }
 
     static CUPMatrix<T> Random(int rows, int cols, T minVal, T maxVal) {
-        std::vector<T> ranVec(rows * cols, 0xBADBAD);
+        std::vector<T> ranVec(rows * cols, 0xBADDBADD);
         randSeq(ranVec.begin(), ranVec.end(), minVal, maxVal);
         return CUPMatrix<T>(ranVec, rows, cols);
     }
 
     std::vector<T> cpyFromDevice() const {
-        std::vector<T> cpuVec(rows * cols, 0xBADBAD);
+        std::vector<T> cpuVec(rows * cols, 0xBADDBADD);
         cuCpyFromDevice<T>(cpuVec, data);
         return cpuVec;
     }
@@ -235,7 +242,6 @@ struct CUPMatrix : public PODMatrix<T> {
     template <CUPTransMask transMask = CUPNoneTrans>
     void gemm(const CUPMatrix<T>& aMatrix, const CUPMatrix<T>& bMatrix, float alpha = 1.f, float beta = 0.f) {
 
-        float* C = data;
         const float* A = aMatrix.data;
         const float* B = bMatrix.data;
         int M, N, K;
@@ -301,17 +307,18 @@ struct CUPMatrix : public PODMatrix<T> {
             std::cout << "CUPMatrix<T>::gemm reallocate\n";
             *this = CUPMatrix<T>{ M, N };
         }
+        float* C = data;
 
-        std::cout << "aTransOpt: " << aTransOpt << "\n"
-            << "bTransOpt: " << bTransOpt << "\n"
-            << "M: " << M << "\n"
-            << "N: " << N << "\n"
-            << "K: " << K << "\n"
-            << "alpha: " << alpha << "\n"
-            << "lda: " << lda << "\n"
-            << "ldb: " << ldb << "\n"
-            << "beta: " << beta << "\n"
-            << "N: " << N << "\n";
+        //std::cout << "aTransOpt: " << aTransOpt << "\n"
+        //    << "bTransOpt: " << bTransOpt << "\n"
+        //    << "M: " << M << "\n"
+        //    << "N: " << N << "\n"
+        //    << "K: " << K << "\n"
+        //    << "alpha: " << alpha << "\n"
+        //    << "lda: " << lda << "\n"
+        //    << "ldb: " << ldb << "\n"
+        //    << "beta: " << beta << "\n"
+        //    << "N: " << N << "\n";
 
         cublasLtHandle_t ltHandle;
         cublasLtCreate(&ltHandle);
@@ -506,7 +513,7 @@ CUPMatrix<T> readIdxXubyte(const std::string& dataFile) {
 
     // Read data:
     int totalElements = std::accumulate(dim.cbegin(), dim.cend(), 1, [](int a, const int& b) {return a * b; });
-    std::vector<T> cpuData(totalElements, 0xBADBAD);
+    std::vector<T> cpuData(totalElements, 0xBADDBADD);
     for (int i = 0; i < cpuData.size(); ++i) {
         uint8_t byte;
         dataIfstream.read(reinterpret_cast<char*>(&byte), sizeof(byte));
@@ -521,13 +528,15 @@ CUPMatrix<T> readIdxXubyte(const std::string& dataFile) {
         }
     }
 
-    CUPMatrix<T> mat;
-    if constexpr (std::is_same_v<T, int>) {
-        mat = CUPMatrix<T>{ cpuData, int(dim[0]), 1 };
-    }
-    else {
-        mat = CUPMatrix<T>{ cpuData, int(dim[0]), int(dim[1] * dim[2]) };
-    }
+    // lambda for guaranteed copy elision
+    CUPMatrix<T> mat = [&] {
+        if constexpr (std::is_same_v<T, int>)
+            return CUPMatrix<T>{ cpuData, int(dim[0]), 1 };
+        else
+            return CUPMatrix<T>{ cpuData, int(dim[0]), int(dim[1] * dim[2]) };
+        }();
+    zzz understand copy elision
+
 
     return mat;
 }
@@ -556,29 +565,28 @@ public:
         auto max_iter = thrust::max_element(d_begin, d_end);
         size_t outputSize = *max_iter + 1;
 
-        std::vector<float>initVec(inputSize * hiddenSize, 0xBADBAD);
+        std::vector<float>initVec(inputSize * hiddenSize, 0xBADDBADD);
         randSeq(initVec.begin(), initVec.end(), -0.01f, 0.01f);
         weight_1 = CUPMatrix<float>(initVec, inputSize, hiddenSize);
 
-        initVec = std::vector<float>(hiddenSize, 0xBADBAD);
+        initVec = std::vector<float>(hiddenSize, 0xBADDBADD);
         randSeq(initVec.begin(), initVec.end(), 0.f, 1.f);
         bias_1 = CUPMatrix<float>(initVec, hiddenSize, 1);
 
-        initVec = std::vector<float>(hiddenSize * outputSize, 0xBADBAD);
+        initVec = std::vector<float>(hiddenSize * outputSize, 0xBADDBADD);
         randSeq(initVec.begin(), initVec.end(), -0.01f, 0.01f);
         weight_2 = CUPMatrix<float>(initVec, hiddenSize, outputSize);
 
-        initVec = std::vector<float>(outputSize, 0xBADBAD);
+        initVec = std::vector<float>(outputSize, 0xBADDBADD);
         randSeq(initVec.begin(), initVec.end(), 0.f, 1.f);
         bias_2 = CUPMatrix<float>(initVec, outputSize, 1);
 
         std::cout << "Epoch\tLoss\n";
-        // slicing totalRows to align with batchSize (no partial batches)
-        int totalRows = batchSize * (x.raiiRows() / batchSize);
         for (int epoch = 0; epoch < epochs; ++epoch) {
 
             Time begin = getTime();
-            for (int i = 0; i < totalRows; i += x.rows) {
+            for (int i = 0; i < x.raiiRows(); i += x.rows) {
+                batchSize = std::min((x.raiiRows() - i), batchSize);
                 x.setView(i, batchSize);
                 y.setView(i, batchSize);
                 forward(x);
@@ -662,10 +670,10 @@ public:
         EigenMatrix weight_2Eig = _testEig::fromCUPMatrix<float>(weight_2);
         weight_2Eig -= lr * dL_dW2Eig;
 
-        EigenMatrix dL_db2Eig = (dL_dz2Eig.colwise().sum() * divM).transpose();
+        EigenMatrix dL_db2Eig = (dL_dz2Eig.colwise().sum() * divM);
 
         EigenMatrix bias_2Eig = _testEig::fromCUPMatrix<float>(bias_2);
-        bias_2Eig -= lr * dL_db2Eig;
+        bias_2Eig -= lr * dL_db2Eig.transpose();
 
         EigenMatrix dL_da1Eig = dL_dz2Eig * weight_2Eig.transpose();
 
@@ -678,10 +686,10 @@ public:
         EigenMatrix weight_1Eig = _testEig::fromCUPMatrix<float>(weight_1);
         weight_1Eig -= lr * dL_dW1Eig;
 
-        EigenMatrix dL_db1Eig = (dL_dz1Eig.colwise().sum() * divM).transpose();
+        EigenMatrix dL_db1Eig = (dL_dz1Eig.colwise().sum() * divM);
 
         EigenMatrix bias_1Eig = _testEig::fromCUPMatrix<float>(bias_1);
-        bias_1Eig -= lr * dL_db1Eig;
+        bias_1Eig -= lr * dL_db1Eig.transpose();
 #endif // COMPARE_MLP_WITH_EIGEN
         int outputSize = a2.cols;
         y_one_hot.oneHot(batchY, outputSize);
@@ -839,11 +847,9 @@ public:
 
 
 
-#ifdef COMPARE_MLP_WITH_EIGEN
+#ifdef COMPARE_MLP_WITH_EIGEN_EPOCH
         auto a2ptr = thrust::device_pointer_cast(a2.data);
-        //EigenMatrix yEig = _testEig::fromCUPMatrix<int>(y);
-        EigenMatrix yEig{ y.rows, y.cols };
-        assert(false); // unhardcode!
+        EigenMatrix yEig = _testEig::fromCUPMatrix<int>(y);
         assert(yEig.cols() == 1);
         double epoch_lossEig = 0.0;
         for (size_t row = 0; row < a2.rows; ++row) {
@@ -867,13 +873,12 @@ public:
     std::vector<int> predict(const CUPMatrix<float>& testX) {
         forward(testX);
 
-        std::vector<int> predictions{ testX.rows, 1 };
+        std::vector<int> predictions(testX.rows, 0xBADDBADD);
         EigenMatrix a2Eig = _testEig::fromCUPMatrix<float>(a2);
         for (int i = 0; i < a2Eig.rows(); ++i) {
             int maxIndex;
             a2Eig.row(i).maxCoeff(&maxIndex);
             predictions[i] = maxIndex;
-            std::cout << i << ": " << maxIndex << "\n";
         }
 
         return predictions;
@@ -1204,23 +1209,24 @@ void testRun() {
 }
 
 int main() {
+    std::cout << DEBUG << "\n";
     enableFpExcept();
-    testRun();
+    //testRun();
 
     CUPMatrix<float> x = readIdxXubyte<float>("assets.ignored/train-images.idx3-ubyte");
     CUPMatrix<int> y = readIdxXubyte<int>("assets.ignored/train-labels.idx1-ubyte");
     CUPMatrix<float> testX = readIdxXubyte<float>("assets.ignored/t10k-images.idx3-ubyte");
     CUPMatrix<int> testY = readIdxXubyte<int>("assets.ignored/t10k-labels.idx1-ubyte");
 
-    const size_t hiddenSize = 128;
-    int batchSize = 128;
-    float lr = 0.01f;
-    int epochs = 10;
+    constexpr size_t hiddenSize = 128;
+    constexpr int epochs = 110;
+    constexpr int batchSize = 128;
+    constexpr float lr = 0.01f;
 
     Time begin = getTime();
     MLP mlp{ x, y, hiddenSize, batchSize, lr, epochs };
     Seconds elapsed = getTime() - begin;
-    std::cout << "training time: " << elapsed;
+    std::cout << "training time: " << elapsed << "\n";
 
     std::vector<int> predictions = mlp.predict(testX);
     std::vector<int> testYEig = testY.cpyFromDevice();
