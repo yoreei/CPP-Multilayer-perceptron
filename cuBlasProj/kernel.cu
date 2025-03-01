@@ -75,7 +75,7 @@ private:
 
 /* host-only, owning class */
 template <typename T>
-class CUPRAII {
+class CUPRAII : public Traceable<CUPRAII<T>> {
 public:
     CUPRAII(const std::vector<T>& cpuVec) : size(cpuVec.size()) {
         ptr = cuAllocCpyFromHost(cpuVec);
@@ -83,7 +83,7 @@ public:
 
     CUPRAII(int size) : size(size) {
         if constexpr (DEBUG) {
-            std::vector<T> cpuVec(size, std::bit_cast<T>(0xBADDBADD)); // TODO do this only in debug
+            std::vector<T> cpuVec(size, std::bit_cast<T>(0xBADDBADD));
             ptr = cuAllocCpyFromHost(cpuVec);
         }
         else {
@@ -96,13 +96,11 @@ public:
         release();
     }
     CUPRAII(const CUPRAII& rhs) : CUPRAII(rhs.size) {
-        std::cout << "CUPRAII copy ctor\n";
         size_t bytes = sizeof(T) * rhs.size;
         CU_CHECK(cudaMemcpy(ptr, rhs.ptr, bytes, cudaMemcpyDeviceToDevice));
     }
 
     CUPRAII& operator=(const CUPRAII& rhs) {
-        std::cout << "CUPRAII operator=\n";
         size_t bytes = sizeof(T) * rhs.size;
         if (this->size != rhs.size) {
             std::cout << "CUPRAII operator= reallocating!\n";
@@ -112,6 +110,20 @@ public:
         }
         CU_CHECK(cudaMemcpy(ptr, rhs.ptr, bytes, cudaMemcpyDeviceToDevice));
         return *this;
+    }
+
+    CUPRAII& operator=(CUPRAII&& rhs) {
+        ptr = rhs.ptr;
+        size = rhs.size;
+        rhs.ptr = nullptr;
+        rhs.size = 0;
+        return *this;
+    }
+    CUPRAII(CUPRAII&& rhs) {
+        ptr = rhs.ptr;
+        size = rhs.size;
+        rhs.ptr = nullptr;
+        rhs.size = 0;
     }
 
     void release() {
@@ -185,11 +197,11 @@ struct CUPMatrix : public PODMatrix<T> {
         data = raii.ptr;
     }
 
-    CUPMatrix(const CUPMatrix<T>& rhs) : CUPMatrix<T>(rhs.raii, rhs.rows, rhs.cols) {
+    CUPMatrix(const CUPMatrix& rhs) : CUPMatrix(rhs.raii, rhs.rows, rhs.cols) {
         int diff = rhs.data - rhs.raii.ptr;
         data = raii.ptr + diff;
     }
-    CUPMatrix<T>& operator=(const CUPMatrix<T>& rhs) {
+    CUPMatrix& operator=(const CUPMatrix& rhs) {
         raii = rhs.raii;
         rows = rhs.rows;
         cols = rhs.cols;
@@ -199,14 +211,17 @@ struct CUPMatrix : public PODMatrix<T> {
         return *this;
     }
 
+    CUPMatrix& operator=(CUPMatrix&& rhs) = default;
+    CUPMatrix(CUPMatrix&& rhs) = default;
+
     const PODMatrix<T> getPod() const {
         return PODMatrix<T>(*this);
     }
 
-    static CUPMatrix<T> Random(int rows, int cols, T minVal, T maxVal) {
+    static CUPMatrix Random(int rows, int cols, T minVal, T maxVal) {
         std::vector<T> ranVec(rows * cols, 0xBADDBADD);
         randSeq(ranVec.begin(), ranVec.end(), minVal, maxVal);
-        return CUPMatrix<T>(ranVec, rows, cols);
+        return CUPMatrix(ranVec, rows, cols);
     }
 
     std::vector<T> cpyFromDevice() const {
@@ -347,14 +362,14 @@ struct CUPMatrix : public PODMatrix<T> {
     }
 
 
-    __host__ void positiveMask(const CUPMatrix<T>& mask) {
+    void positiveMask(const CUPMatrix<T>& mask) {
         assert(cols == mask.cols && rows == mask.rows);
         int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
         cuPositiveMask << <blocks, BLOCK_DIM >> > (getPod(), mask.getPod());
         cudaDeviceSynchronize();
     }
 
-    __host__ void dup_rows(const CUPMatrix<T>& row, int numRows) {
+    void dup_rows(const CUPMatrix<T>& row, int numRows) {
         assert(row.cols == 1); // we are assuming a row vector here!
         // O(log n) memcpy calls
         if (rows != numRows || cols != row.cols) {
@@ -381,15 +396,19 @@ struct CUPMatrix : public PODMatrix<T> {
         }
     }
 
-    __host__ void relu() {
+    void relu() {
         int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
         cuRelu << <blocks, BLOCK_DIM >> > (getPod());
         cudaDeviceSynchronize();
     }
 
-    __host__ void oneHot(const CUPMatrix<int>& y, int maxVal) {
+    void oneHot(const CUPMatrix<int>& y, int maxVal) {
         assert(y.cols == 1);
-        *this = CUPMatrix(y.rows, maxVal);
+        if (raii.size != y.rows * maxVal) {
+            *this = CUPMatrix(y.rows, maxVal);
+        }
+        rows = y.rows;
+        cols = maxVal;
 
         int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
         cuOneHot << <blocks, BLOCK_DIM >> > (getPod(), y.getPod());
@@ -397,7 +416,7 @@ struct CUPMatrix : public PODMatrix<T> {
 
     }
 
-    __host__ void softmax() requires std::same_as<T, float> {
+    void softmax() requires std::same_as<T, float> {
         // matrix.cols is currently hardcoded for this function. TODO unhardcode!
         constexpr int BlockSize = 32; // must be multiple of warp size
         if (cols > BlockSize) {
@@ -409,7 +428,6 @@ struct CUPMatrix : public PODMatrix<T> {
         cudaDeviceSynchronize();
     }
 
-private:
     CUPRAII<T> raii{ 0 };
 };
 
@@ -535,7 +553,6 @@ CUPMatrix<T> readIdxXubyte(const std::string& dataFile) {
         else
             return CUPMatrix<T>{ cpuData, int(dim[0]), int(dim[1] * dim[2]) };
         }();
-    zzz understand copy elision
 
 
     return mat;
@@ -586,14 +603,14 @@ public:
 
             Time begin = getTime();
             for (int i = 0; i < x.raiiRows(); i += x.rows) {
-                batchSize = std::min((x.raiiRows() - i), batchSize);
-                x.setView(i, batchSize);
-                y.setView(i, batchSize);
+                int batchRows = std::min((x.raiiRows() - i), batchSize);
+                x.setView(i, batchRows);
+                y.setView(i, batchRows);
                 forward(x);
                 backward(x, y, lr);
             }
             Seconds elapsed = getTime() - begin;
-            std::cout << "epoch time: " << elapsed << std::endl;
+            std::cout << "epoch time (" << epoch << "/" << epochs << "): " << elapsed << std::endl;
 
 #ifdef EVAL_EPOCH
             x.setView(0, x.raiiRows());
@@ -1152,12 +1169,13 @@ void test_positive_mask(int m, int n) {
     _testEig::cmpMat(eigCmp, mlpCmp);
 }
 
-void testRaii() {
+void test_raii() {
     CUPMatrix<int> a{ 5,5, 1 };
     a = CUPMatrix<int>{ 6,6, 2 }; // expanding
     a = CUPMatrix<int>{ 4,4, 3 }; // shrinking
 
-    CUPMatrix<int> b = a;
+    CUPMatrix<int> b;
+    b = a;
     assert(b.data != a.data); // deep copy (assignment)
     CUPMatrix<int> copyCtor(a);
     assert(copyCtor.data != a.data); // deep copy (copy ctor)
@@ -1183,8 +1201,7 @@ void testRaii() {
 }
 
 void testRun() {
-    testRaii();
-    test_softmax(2, 10);
+    test_raii();
     std::vector<int> in, out;
     in = { 1,2,3,4,5 };
     out = std::vector<int>(2, 0);
@@ -1211,7 +1228,7 @@ void testRun() {
 int main() {
     std::cout << DEBUG << "\n";
     enableFpExcept();
-    //testRun();
+    testRun();
 
     CUPMatrix<float> x = readIdxXubyte<float>("assets.ignored/train-images.idx3-ubyte");
     CUPMatrix<int> y = readIdxXubyte<int>("assets.ignored/train-labels.idx1-ubyte");

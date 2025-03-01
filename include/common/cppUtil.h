@@ -74,3 +74,23 @@ void randSeq(Iterator begin, Iterator end, std::iter_value_t<Iterator> rMin = 0,
         ++begin;
     }
 }
+
+// A CRTP base class that instruments the special member functions.
+template <typename Derived>
+struct Traceable {
+    Traceable() { TraceableLog(std::string(typeid(Derived).name()) + ": default constructed"); }
+    Traceable(const Traceable&) { TraceableLog(std::string(typeid(Derived).name()) + ": copy constructed"); }
+    Traceable(Traceable&&) { TraceableLog(std::string(typeid(Derived).name()) + ": move constructed"); }
+    Traceable& operator=(const Traceable&) { 
+        TraceableLog(std::string(typeid(Derived).name()) + ": copy assigned"); 
+        return *this;
+    }
+    Traceable& operator=(Traceable&&) { 
+        TraceableLog(std::string(typeid(Derived).name()) + ": move assigned"); 
+        return *this;
+    }
+    ~Traceable() { TraceableLog(std::string(typeid(Derived).name()) + ": destructed"); }
+    static void TraceableLog(const std::string& msg) {
+        //std::cout << msg << std::endl;
+    }
+};
