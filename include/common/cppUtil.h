@@ -3,6 +3,9 @@
 #include <chrono>
 #include <iterator>
 #include <random>
+#include <unordered_map>
+#include <string>
+#include <tuple>
 
 #ifndef NDEBUG
 inline constexpr bool DEBUG = true;
@@ -11,22 +14,66 @@ inline constexpr bool DEBUG = false;
 #endif
 
 #if defined(DISABLE_INLINING)
-  #if defined(_MSC_VER)
-    #define INLINING __declspec(noinline)
-  #else
-    #define INLINING __attribute__((noinline))
-  #endif
+#if defined(_MSC_VER)
+#define INLINING __declspec(noinline)
 #else
-  #define INLINING 
+#define INLINING __attribute__((noinline))
+#endif
+#else
+#define INLINING 
 #endif
 
-using Time = std::chrono::time_point<std::chrono::high_resolution_clock>;
+using TimePoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
-Time getTime() {
+TimePoint getTimePoint() {
     return std::chrono::high_resolution_clock::now();
 }
+
+using Micro = std::chrono::duration<double, std::micro>;
 using Milli = std::chrono::duration<double, std::milli>;
 using Seconds = std::chrono::duration<double, std::ratio<1>>;
+
+template <typename Unit>
+Unit getEpochTime() {
+    return getTimePoint().time_since_epoch();
+}
+
+// vBench
+struct IdentityHasher {
+    size_t operator()(size_t key) const noexcept {
+        return key;
+    }
+};
+using BenchId = size_t;
+static std::unordered_map<BenchId, std::tuple<std::string, double>, IdentityHasher> cppBenchMap;
+static std::unordered_map<BenchId, double, IdentityHasher> cppBenchActive;
+BenchId cppBench(const std::string& name) {
+    BenchId hashValue = std::hash<std::string>{}(name);
+    if (cppBenchMap.find(hashValue) == cppBenchMap.cend()) {
+        std::get<std::string>(cppBenchMap[hashValue]) = name;
+        std::get<double>(cppBenchMap[hashValue]) = 0.f;
+    }
+    cppBenchActive[hashValue] = getEpochTime<Milli>().count();
+    return hashValue;
+}
+
+void cppBenchEnd(BenchId id) {
+    if (cppBenchActive.find(id) == cppBenchActive.cend()) {
+        throw std::runtime_error("wrong bench id");
+    }
+    std::get<double>(cppBenchMap[id]) += getEpochTime<Milli>().count() - cppBenchActive[id];
+    cppBenchActive.erase(id);
+}
+void cppBenchPrint() {
+    if (cppBenchActive.size() != 0) {
+        std::cout << "cppBenchActive is not empty!!!\n";
+    }
+    for (const auto& e : cppBenchMap) {
+        // e.second is a <std::string, double> tuple
+        std::cout << std::get<std::string>(e.second) << ": " << std::get<double>(e.second) << "\n";
+    }
+}
+// ^Bench
 
 // Convert a pixel (float) to a character for visualization.
 char ASCIIArtFromFloat(float f) {
@@ -91,12 +138,12 @@ struct Traceable {
     Traceable() { TraceableLog(std::string(typeid(Derived).name()) + ": default constructed"); }
     Traceable(const Traceable&) { TraceableLog(std::string(typeid(Derived).name()) + ": copy constructed"); }
     Traceable(Traceable&&) { TraceableLog(std::string(typeid(Derived).name()) + ": move constructed"); }
-    Traceable& operator=(const Traceable&) { 
-        TraceableLog(std::string(typeid(Derived).name()) + ": copy assigned"); 
+    Traceable& operator=(const Traceable&) {
+        TraceableLog(std::string(typeid(Derived).name()) + ": copy assigned");
         return *this;
     }
-    Traceable& operator=(Traceable&&) { 
-        TraceableLog(std::string(typeid(Derived).name()) + ": move assigned"); 
+    Traceable& operator=(Traceable&&) {
+        TraceableLog(std::string(typeid(Derived).name()) + ": move assigned");
         return *this;
     }
     ~Traceable() { TraceableLog(std::string(typeid(Derived).name()) + ": destructed"); }
