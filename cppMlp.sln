@@ -20,6 +20,8 @@ Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
 		Debug|x86 = Debug|x86
+		Instrumentation|x64 = Instrumentation|x64
+		Instrumentation|x86 = Instrumentation|x86
 		Release|x64 = Release|x64
 		Release|x86 = Release|x86
 	EndGlobalSection
@@ -28,6 +30,10 @@ Global
 		{3E8B0F12-F7A4-4B4F-8364-9A19FB340F7B}.Debug|x64.Build.0 = Debug|x64
 		{3E8B0F12-F7A4-4B4F-8364-9A19FB340F7B}.Debug|x86.ActiveCfg = Debug|Win32
 		{3E8B0F12-F7A4-4B4F-8364-9A19FB340F7B}.Debug|x86.Build.0 = Debug|Win32
+		{3E8B0F12-F7A4-4B4F-8364-9A19FB340F7B}.Instrumentation|x64.ActiveCfg = Instrumentation|x64
+		{3E8B0F12-F7A4-4B4F-8364-9A19FB340F7B}.Instrumentation|x64.Build.0 = Instrumentation|x64
+		{3E8B0F12-F7A4-4B4F-8364-9A19FB340F7B}.Instrumentation|x86.ActiveCfg = Instrumentation|Win32
+		{3E8B0F12-F7A4-4B4F-8364-9A19FB340F7B}.Instrumentation|x86.Build.0 = Instrumentation|Win32
 		{3E8B0F12-F7A4-4B4F-8364-9A19FB340F7B}.Release|x64.ActiveCfg = Release|x64
 		{3E8B0F12-F7A4-4B4F-8364-9A19FB340F7B}.Release|x64.Build.0 = Release|x64
 		{3E8B0F12-F7A4-4B4F-8364-9A19FB340F7B}.Release|x86.ActiveCfg = Release|Win32
@@ -36,6 +42,10 @@ Global
 		{4098E745-17D1-44B0-ADCB-5F07CE338CC4}.Debug|x64.Build.0 = Debug|x64
 		{4098E745-17D1-44B0-ADCB-5F07CE338CC4}.Debug|x86.ActiveCfg = Debug|Win32
 		{4098E745-17D1-44B0-ADCB-5F07CE338CC4}.Debug|x86.Build.0 = Debug|Win32
+		{4098E745-17D1-44B0-ADCB-5F07CE338CC4}.Instrumentation|x64.ActiveCfg = Instrumentation|x64
+		{4098E745-17D1-44B0-ADCB-5F07CE338CC4}.Instrumentation|x64.Build.0 = Instrumentation|x64
+		{4098E745-17D1-44B0-ADCB-5F07CE338CC4}.Instrumentation|x86.ActiveCfg = Instrumentation|Win32
+		{4098E745-17D1-44B0-ADCB-5F07CE338CC4}.Instrumentation|x86.Build.0 = Instrumentation|Win32
 		{4098E745-17D1-44B0-ADCB-5F07CE338CC4}.Release|x64.ActiveCfg = Release|x64
 		{4098E745-17D1-44B0-ADCB-5F07CE338CC4}.Release|x64.Build.0 = Release|x64
 		{4098E745-17D1-44B0-ADCB-5F07CE338CC4}.Release|x86.ActiveCfg = Release|Win32
@@ -44,6 +54,10 @@ Global
 		{3139A00C-946A-4CBD-A64A-62A596A02937}.Debug|x64.Build.0 = Debug|x64
 		{3139A00C-946A-4CBD-A64A-62A596A02937}.Debug|x86.ActiveCfg = Debug|x64
 		{3139A00C-946A-4CBD-A64A-62A596A02937}.Debug|x86.Build.0 = Debug|x64
+		{3139A00C-946A-4CBD-A64A-62A596A02937}.Instrumentation|x64.ActiveCfg = Instrumentation|x64
+		{3139A00C-946A-4CBD-A64A-62A596A02937}.Instrumentation|x64.Build.0 = Instrumentation|x64
+		{3139A00C-946A-4CBD-A64A-62A596A02937}.Instrumentation|x86.ActiveCfg = Instrumentation|x64
+		{3139A00C-946A-4CBD-A64A-62A596A02937}.Instrumentation|x86.Build.0 = Instrumentation|x64
 		{3139A00C-946A-4CBD-A64A-62A596A02937}.Release|x64.ActiveCfg = Release|x64
 		{3139A00C-946A-4CBD-A64A-62A596A02937}.Release|x64.Build.0 = Release|x64
 		{3139A00C-946A-4CBD-A64A-62A596A02937}.Release|x86.ActiveCfg = Release|x64
@@ -52,6 +66,10 @@ Global
 		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Debug|x64.Build.0 = Debug|x64
 		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Debug|x86.ActiveCfg = Debug|x64
 		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Debug|x86.Build.0 = Debug|x64
+		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Instrumentation|x64.ActiveCfg = Instrumentation|x64
+		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Instrumentation|x64.Build.0 = Instrumentation|x64
+		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Instrumentation|x86.ActiveCfg = Instrumentation|x64
+		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Instrumentation|x86.Build.0 = Instrumentation|x64
 		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Release|x64.ActiveCfg = Release|x64
 		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Release|x64.Build.0 = Release|x64
 		{EAFB1AA0-16ED-4FD4-82AD-AB9BC2121051}.Release|x86.ActiveCfg = Release|x64

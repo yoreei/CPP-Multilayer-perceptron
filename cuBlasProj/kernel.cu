@@ -31,7 +31,7 @@
 
 // define to compare my implementation with an eigen implementation (known to work) (slow)
 #undef COMPARE_MLP_WITH_EIGEN
-#define COMPARE_MLP_WITH_EIGEN_EPOCH
+#undef COMPARE_MLP_WITH_EIGEN_EPOCH
 // compute loss function (slows down epochs)
 #undef EVAL_EPOCH
 
@@ -361,6 +361,30 @@ struct CUPMatrix : public PODMatrix<T> {
         cublasLtDestroy(ltHandle);
     }
 
+    void colwiseSumAlpha(const CUPMatrix<T>& mat, CUPMatrix<T>& ones, float alpha, float beta = 0.f) {
+        // resize `ones` if necessary:
+        if (ones.cols != 1 || ones.rows < mat.rows) {
+            std::cout << "ColwiseSumAlpha reallocate ones\n";
+            ones = CUPMatrix<T>(mat.rows, 1, 1.f);
+        }
+        if (this->rows != 1 || this->cols != mat.cols) {
+            std::cout << "ColwiseSumAlpha reallocate C\n";
+            *this = CUPMatrix<T>(1, mat.cols);
+        }
+
+        int N = mat.rows;
+        int M = mat.cols;
+
+        cublasSgemv(CublasHandle::get(),
+            CUBLAS_OP_N, // transpose A
+            M, N,        // dimensions of A
+            &alpha,
+            mat.data, M,   // A pointer and leading dimension
+            ones.data, 1,       // ones vector
+            &beta,
+            this->data, 1);       // output vector
+
+    }
 
     void positiveMask(const CUPMatrix<T>& mask) {
         assert(cols == mask.cols && rows == mask.rows);
@@ -745,9 +769,8 @@ public:
             )
         );
 
-        // dL_db2 = dL_dz2.colwise().sum() * dimM
-        CUPMatrix<float> ones{ 1, dL_dz2.rows, 1.f };
-        dL_db2.gemm(ones, dL_dz2, divM); // gemv could be faster
+        // dL_db2 = dL_dz2.colwise().sum() * divM
+        dL_db2.colwiseSumAlpha(dL_dz2, ones, divM);
 
         // bias_2 -= lr * dL_db2
         alpha = -lr;
@@ -788,8 +811,7 @@ public:
 
 
         // dL_db1 = dL_dz1.colwise().sum() * divM
-        ones = CUPMatrix<float>{ 1, dL_dz1.rows, 1.f };
-        dL_db1.gemm(ones, dL_dz1, divM); // gemv could be faster
+        dL_db1.colwiseSumAlpha(dL_dz1, ones, divM);
 
         //bias_1 -= lr * dL_db1
         alpha = -lr;
@@ -920,6 +942,7 @@ public:
     CUPMatrix<float> dL_dz1;
     CUPMatrix<float> dL_dW1;
     CUPMatrix<float> dL_db1;
+    CUPMatrix<float> ones;
 
     std::vector<float> losses;
 };
@@ -1200,14 +1223,32 @@ void test_raii() {
     assert(*endPtr == 3);
 }
 
+void test_colwiseSum(int m, int n, CUPMatrix<float>& ones) {
+    CUPMatrix<float> b = CUPMatrix<float>::Random(m, n, -100.f, 100.f);
+    EigenMatrix bEig = _testEig::fromCUPMatrix(b);
+    CUPMatrix<float> bSum;
+    float fAlpha = 1.2f;
+
+    bSum.colwiseSumAlpha(b, ones, fAlpha);
+    EigenMatrix bSumEig = (bEig.colwise().sum() * fAlpha);
+
+    assert(bSum.rows == 1 && bSum.cols == b.cols);
+
+    EigenMatrix bSumCmp = _testEig::fromCUPMatrix(bSum);
+    _testEig::cmpMat(bSumEig, bSumCmp);
+
+}
+
 void testRun() {
     test_raii();
     std::vector<int> in, out;
+    CUPMatrix<float> ones;
     in = { 1,2,3,4,5 };
     out = std::vector<int>(2, 0);
     while (nextPermute(in, out)) {
         int m = out[0];
         int n = out[1];
+        test_colwiseSum(m, n, ones);
         test_softmax(m, n);
         test_relu(m, n);
         test_one_hot(m, n);
@@ -1226,9 +1267,8 @@ void testRun() {
 }
 
 int main() {
-    std::cout << DEBUG << "\n";
     enableFpExcept();
-    testRun();
+    //testRun();
 
     CUPMatrix<float> x = readIdxXubyte<float>("assets.ignored/train-images.idx3-ubyte");
     CUPMatrix<int> y = readIdxXubyte<int>("assets.ignored/train-labels.idx1-ubyte");
