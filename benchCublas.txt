@@ -49,4 +49,9 @@ MLP::Backward: 24733 , 25.25%
     constexpr int batchSize = 128;
 
 training time: 25.5865s
+training time: 26.6024s
 Test Accuracy: 0.9663
+
+--------
+(after fixing dupRows reallocation bug)
+training time: 14.9122s
