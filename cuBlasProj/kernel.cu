@@ -36,6 +36,9 @@
 // compute loss function (slows down epochs)
 #undef EVAL_EPOCH
 
+inline constexpr int EPOCHS = 110;
+inline constexpr int BATCH_SIZE = 128;
+inline constexpr float LR = 0.01f;
 
 /*
 CUP = Cuda (multilayer) Perceptron
@@ -164,11 +167,11 @@ struct PODMatrix {
     int rows = 0;
     int cols = 0;
     T* data = nullptr;
-    __host__ size_t getIdx(int row, int col) {
+    __host__ size_t getIdx(int row, int col) const {
         assert(row < rows && col < cols);
         return row * cols + col;
     }
-    __device__ size_t d_getIdx(int row, int col) {
+    __device__ size_t d_getIdx(int row, int col) const {
         return row * cols + col;
     }
 
@@ -306,22 +309,8 @@ struct CUPMatrix : public PODMatrix<T> {
 
 
 
-    INLINING void computeBias(const CUPMatrix<float>& dL_dz2, CUPMatrix<float>& dL_db2, CUPMatrix<float>& ones, float divM, float lr) {
-        dL_db2.colwiseSumAlpha(dL_dz2, ones, divM);
 
-        float alpha = -lr;
-        CUBLAS_CHECK(
-            cublasSaxpy(		 // y = y + alpha * x
-                CublasHandle::get(),
-                dL_db2.size(), // x.size
-                &alpha,			 // alpha
-                dL_db2.data, // x
-                1,				 // incx
-                data, // y
-                1 				 // incy
-            )
-        );
-    }
+
 
     template <CUPTransMask transMask = CUPNoneTrans>
     INLINING void gemm(const CUPMatrix<T>& aMatrix, const CUPMatrix<T>& bMatrix, float alpha = 1.f, float beta = 0.f) {
@@ -538,6 +527,17 @@ struct CUPMatrix : public PODMatrix<T> {
         cudaDeviceSynchronize();
     }
 
+    INLINING void computeBias(const CUPMatrix<float>& dL_dz, float divM, float lr) {
+        if (rows != dL_dz.cols || cols != 1) {
+            throw std::runtime_error("dims");
+        }
+
+        int blocks = rows;
+        cuComputeBias<BATCH_SIZE> << <blocks, BATCH_SIZE >> > (getPod(), dL_dz.getPod(), -divM * lr);
+        cudaDeviceSynchronize();
+    }
+
+
     CUPRAII<T> raii{ 0 };
 };
 
@@ -555,6 +555,28 @@ __global__ void cuA2Sub1Hot(PODMatrix<float> dL_dz2, PODMatrix<float> a2, PODMat
         if (col == batchY.data[row]) {
             dL_dz2.data[idx] -= 1.f;
         }
+    }
+
+}
+
+template <int BlockSize>
+__global__ void cuComputeBias(PODMatrix<float> bias, const PODMatrix<float> dL_dz, float alpha) {
+    //EigenMatrix dL_db2Eig = (dL_dz2Eig.colwise().sum() * divM);
+    //bias_2Eig -= lr * dL_db2Eig.transpose();
+
+    static_assert(BlockSize % 32 == 0);
+    // Each block processes one row
+    using BlockReduce = cub::BlockReduce<float, BlockSize>;
+    __shared__ typename BlockReduce::TempStorage temp_storage;
+
+    int idx = dL_dz.d_getIdx(threadIdx.x, blockIdx.x);
+
+    float thread_sum = (threadIdx.x < dL_dz.rows) ? dL_dz.data[idx] : 0;
+    // Only thread_0 in block has the correct result
+    float block_sum = BlockReduce(temp_storage).Reduce(thread_sum, cub::Sum());
+
+    if (threadIdx.x == 0) {
+        bias.data[blockIdx.x] += block_sum * alpha;
     }
 
 }
@@ -870,7 +892,7 @@ public:
 
         // dL_db2 = dL_dz2.colwise().sum() * divM
         // bias_2 -= lr * dL_db2
-        bias_2.computeBias(dL_dz2, dL_db2, ones, divM, lr);
+        bias_2.computeBias(dL_dz2, divM, lr);
 
         // 4. Backpropagate to the hidden layer:
         dL_da1.gemm<CUPBTrans>(dL_dz2, weight_2);
@@ -897,7 +919,7 @@ public:
 
 
         // dL_db1 = dL_dz1.colwise().sum() * divM
-        bias_1.computeBias(dL_dz1, dL_db1, ones, divM, lr);
+        bias_1.computeBias(dL_dz1, divM, lr);
 
 #ifdef COMPARE_MLP_WITH_EIGEN
         //EigenMatrix y_one_hotCmp = _testEig::fromCUPMatrix<float>(y_one_hot);
@@ -908,8 +930,8 @@ public:
         _testEig::cmpMat(dL_dW2Cmp, dL_dW2Eig);
         EigenMatrix weight_2Cmp = _testEig::fromCUPMatrix<float>(weight_2);
         _testEig::cmpMat(weight_2Cmp, weight_2Eig);
-        EigenMatrix dL_db2Cmp = _testEig::fromCUPMatrix<float>(dL_db2);
-        _testEig::cmpMat(dL_db2Cmp, dL_db2Eig);
+        //EigenMatrix dL_db2Cmp = _testEig::fromCUPMatrix<float>(dL_db2);
+        //_testEig::cmpMat(dL_db2Cmp, dL_db2Eig);
         EigenMatrix bias_2Cmp = _testEig::fromCUPMatrix<float>(bias_2);
         _testEig::cmpMat(bias_2Cmp, bias_2Eig);
         EigenMatrix dL_da1Cmp = _testEig::fromCUPMatrix<float>(dL_da1);
@@ -920,8 +942,8 @@ public:
         _testEig::cmpMat(dL_dW1Cmp, dL_dW1Eig);
         EigenMatrix weight_1Cmp = _testEig::fromCUPMatrix<float>(weight_1);
         _testEig::cmpMat(weight_1Cmp, weight_1Eig);
-        EigenMatrix dL_db1Cmp = _testEig::fromCUPMatrix<float>(dL_db1);
-        _testEig::cmpMat(dL_db1Cmp, dL_db1Eig);
+        //EigenMatrix dL_db1Cmp = _testEig::fromCUPMatrix<float>(dL_db1);
+        //_testEig::cmpMat(dL_db1Cmp, dL_db1Eig);
         EigenMatrix bias_1Cmp = _testEig::fromCUPMatrix<float>(bias_1);
         _testEig::cmpMat(bias_1Cmp, bias_1Eig);
 #endif
@@ -1350,12 +1372,9 @@ int main() {
     CUPMatrix<int> testY = readIdxXubyte<int>("assets.ignored/t10k-labels.idx1-ubyte");
 
     constexpr size_t hiddenSize = 128;
-    constexpr int epochs = 110;
-    constexpr int batchSize = 128;
-    constexpr float lr = 0.01f;
 
     Time begin = getTime();
-    MLP mlp{ x, y, hiddenSize, batchSize, lr, epochs };
+    MLP mlp{ x, y, hiddenSize, BATCH_SIZE, LR, EPOCHS };
     Seconds elapsed = getTime() - begin;
     std::cout << "training time: " << elapsed << "\n";
 

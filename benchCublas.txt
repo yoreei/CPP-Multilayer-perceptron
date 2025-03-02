@@ -55,3 +55,13 @@ Test Accuracy: 0.9663
 --------
 (after fixing dupRows reallocation bug)
 training time: 14.9122s
+
+-------
+(after a2Sub1Hot kernel)
+training time: 12.2166s
+
+
+------
+(after computeBias kernel)
+training time: 11.8486s
+training time: 11.3843s
