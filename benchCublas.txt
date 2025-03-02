@@ -1,0 +1,52 @@
+hiddenSize = 128
+batchSize = 512
+epochs = 90
+
+training time: 8.5896s
+Test Accuracy: 0.9241
+
+------
+
+    int epochs = 180;
+    int batchSize = 1024;
+
+training time: 12.6787s
+Test Accuracy: 0.9253
+
+-----------
+
+    constexpr int epochs = 45;
+    constexpr int batchSize = 256;
+
+
+training time: 9.19926s
+Test Accuracy: 0.9251
+
+
+--------
+    constexpr int epochs = 110;
+    constexpr int batchSize = 128;
+
+
+training time: 43.4069s
+Test Accuracy: 0.9647
+
+---------
+(after move operations):
+training time: 30.8951s
+training time: 31.5879s
+
+instrumentation:
+CUPMatrix::CUPMatrix: 4.36%
+CUPMatrix::operator=: 1.85%
+CUPRAII::release 1.49%
+
+MLP::Backward: 24733 , 25.25%
+
+--------
+(after preallocating ones)
+    constexpr int epochs = 110;
+    constexpr int batchSize = 128;
+
+training time: 25.5865s
+Test Accuracy: 0.9663
