@@ -83,6 +83,7 @@
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <AdditionalOptions>--std c++20 %(AdditionalOptions)</AdditionalOptions>
+      <SplitCompile>MaxThreads</SplitCompile>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -105,6 +106,7 @@
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
       <AdditionalOptions>--std c++20 %(AdditionalOptions)</AdditionalOptions>
+      <SplitCompile>MaxThreads</SplitCompile>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Instrumentation|x64'">
@@ -129,6 +131,7 @@
       <AdditionalOptions>--std c++20 %(AdditionalOptions)</AdditionalOptions>
       <HostDebugInfo>true</HostDebugInfo>
       <Optimization>Od</Optimization>
+      <SplitCompile>MaxThreads</SplitCompile>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>

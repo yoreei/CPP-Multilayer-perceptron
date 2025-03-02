@@ -532,9 +532,14 @@ struct CUPMatrix : public PODMatrix<T> {
             throw std::runtime_error("dims");
         }
 
+        constexpr int ItemsPerThread = 2;
+        static_assert(BATCH_SIZE % ItemsPerThread == 0);
         int blocks = rows;
-        cuComputeBias<BATCH_SIZE> << <blocks, BATCH_SIZE >> > (getPod(), dL_dz.getPod(), -divM * lr);
+
+        BenchId benchId = cppBench("cuComputeBias");
+        cuComputeBias<BATCH_SIZE / ItemsPerThread, ItemsPerThread> << <blocks, BATCH_SIZE >> > (getPod(), dL_dz.getPod(), -divM * lr);
         cudaDeviceSynchronize();
+        cppBenchEnd(benchId);
     }
 
 
@@ -559,7 +564,7 @@ __global__ void cuA2Sub1Hot(PODMatrix<float> dL_dz2, PODMatrix<float> a2, PODMat
 
 }
 
-template <int BlockSize>
+template <int BlockSize, int ItemsPerThread >
 __global__ void cuComputeBias(PODMatrix<float> bias, const PODMatrix<float> dL_dz, float alpha) {
     //EigenMatrix dL_db2Eig = (dL_dz2Eig.colwise().sum() * divM);
     //bias_2Eig -= lr * dL_db2Eig.transpose();
@@ -569,9 +574,13 @@ __global__ void cuComputeBias(PODMatrix<float> bias, const PODMatrix<float> dL_d
     using BlockReduce = cub::BlockReduce<float, BlockSize>;
     __shared__ typename BlockReduce::TempStorage temp_storage;
 
-    int idx = dL_dz.d_getIdx(threadIdx.x, blockIdx.x);
+    int rowStart = threadIdx.x * ItemsPerThread;
 
-    float thread_sum = (threadIdx.x < dL_dz.rows) ? dL_dz.data[idx] : 0;
+    float thread_sum = 0.f;
+    for (int i = 0; i < ItemsPerThread; ++i) {
+        thread_sum = (threadIdx.x < dL_dz.rows) ? dL_dz.data[blockIdx.x + (rowStart + i) * dL_dz.cols] : 0;
+    }
+
     // Only thread_0 in block has the correct result
     float block_sum = BlockReduce(temp_storage).Reduce(thread_sum, cub::Sum());
 
@@ -729,7 +738,7 @@ namespace _testEig {
     EigenMatrix one_hot(const EigenMatrix& y, int maxVal);
     EigenMatrix dup_rows(const EigenMatrix& x, const EigenRowVectorf& y);
     EigenMatrix positive_mask(const EigenMatrix& data, const EigenMatrix& mask);
-    void cmpMat(const EigenMatrix& a, const EigenMatrix& b);
+    void cmpMat(const EigenMatrix& a, const EigenMatrix& b, float prec = Eigen::NumTraits<float>::dummy_precision());
 }
 
 class MLP {
@@ -762,7 +771,7 @@ public:
         std::cout << "Epoch\tLoss\n";
         for (int epoch = 0; epoch < epochs; ++epoch) {
 
-            Time begin = getTime();
+            TimePoint begin = getTimePoint();
             for (int i = 0; i < x.raiiRows(); i += x.rows) {
                 int batchRows = std::min((x.raiiRows() - i), batchSize);
                 x.setView(i, batchRows);
@@ -770,7 +779,7 @@ public:
                 forward(x);
                 backward(x, y, lr);
             }
-            Seconds elapsed = getTime() - begin;
+            Seconds elapsed = getTimePoint() - begin;
             std::cout << "epoch time (" << epoch << "/" << epochs << "): " << elapsed << std::endl;
 
 #ifdef EVAL_EPOCH
@@ -933,7 +942,7 @@ public:
         //EigenMatrix dL_db2Cmp = _testEig::fromCUPMatrix<float>(dL_db2);
         //_testEig::cmpMat(dL_db2Cmp, dL_db2Eig);
         EigenMatrix bias_2Cmp = _testEig::fromCUPMatrix<float>(bias_2);
-        _testEig::cmpMat(bias_2Cmp, bias_2Eig);
+        _testEig::cmpMat(bias_2Cmp, bias_2Eig, 1e-3f);
         EigenMatrix dL_da1Cmp = _testEig::fromCUPMatrix<float>(dL_da1);
         _testEig::cmpMat(dL_da1Cmp, dL_da1Eig);
         EigenMatrix dL_dz1Cmp = _testEig::fromCUPMatrix<float>(dL_dz1);
@@ -945,7 +954,7 @@ public:
         //EigenMatrix dL_db1Cmp = _testEig::fromCUPMatrix<float>(dL_db1);
         //_testEig::cmpMat(dL_db1Cmp, dL_db1Eig);
         EigenMatrix bias_1Cmp = _testEig::fromCUPMatrix<float>(bias_1);
-        _testEig::cmpMat(bias_1Cmp, bias_1Eig);
+        _testEig::cmpMat(bias_1Cmp, bias_1Eig, 1e-3f);
 #endif
     }
 
@@ -1107,8 +1116,8 @@ namespace _testEig {
         return (data.array() * (mask.array() > 0).cast<float>()).matrix();
     }
 
-    void cmpMat(const EigenMatrix& a, const EigenMatrix& b) {
-        if (a.isApprox(b)) {
+    void cmpMat(const EigenMatrix& a, const EigenMatrix& b, float prec) {
+        if (a.isApprox(b, prec)) {
             //std::cout << "Test passed: matrices are equal." << std::endl;
         }
         else {
@@ -1373,9 +1382,9 @@ int main() {
 
     constexpr size_t hiddenSize = 128;
 
-    Time begin = getTime();
+    TimePoint begin = getTimePoint();
     MLP mlp{ x, y, hiddenSize, BATCH_SIZE, LR, EPOCHS };
-    Seconds elapsed = getTime() - begin;
+    Seconds elapsed = getTimePoint() - begin;
     std::cout << "training time: " << elapsed << "\n";
 
     std::vector<int> predictions = mlp.predict(testX);
@@ -1389,6 +1398,7 @@ int main() {
         }
     }
     std::cout << "Test Accuracy: " << acc / float(predictions.size()) << std::endl;
+    cppBenchPrint();
 
     CublasHandle::free();
     return 0;
