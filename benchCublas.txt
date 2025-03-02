@@ -65,3 +65,14 @@ training time: 12.2166s
 (after computeBias kernel)
 training time: 11.8486s
 training time: 11.3843s
+training time: 13.9451s
+training time: 10.6849s
+
+------
+
+inline constexpr int EPOCHS = 110;
+inline constexpr int BATCH_SIZE = 128;
+
+
+training time: 10.2257s
+Test Accuracy: 0.9663

@@ -32,8 +32,7 @@
 
 // define to compare my implementation with an eigen implementation (known to work) (slow)
 #undef COMPARE_MLP_WITH_EIGEN
-#undef COMPARE_MLP_WITH_EIGEN_EPOCH
-// compute loss function (slows down epochs)
+// compute loss function (slow!)
 #undef EVAL_EPOCH
 
 inline constexpr int EPOCHS = 110;
@@ -273,28 +272,6 @@ struct CUPMatrix : public PODMatrix<T> {
         return raii.size / cols;
     }
 
-    //INLINING void a2Sub1Hot(const CUPMatrix<float>& a2, CUPMatrix<float>& y_one_hot, const CUPMatrix<int>& batchY) {
-    //    int outputSize = a2.cols;
-    //    y_one_hot.oneHot(batchY, outputSize);
-
-    //    // 2. Compute gradient at output layer:
-    //    // dL_dz2 = a2 - y_one_hot;
-    //    *this = a2;
-    //    float alpha = -1.f;
-    //    CUBLAS_CHECK(
-    //        cublasSaxpy(     // y = y + alpha * x
-    //            CublasHandle::get(),
-    //            size(), //n
-    //            &alpha,		 //alpha
-    //            y_one_hot.data, //x
-    //            1,			//incx
-    //            data,    //y
-    //            1			//incy
-    //        )
-    //    );
-
-    //}
-
     INLINING void a2Sub1Hot(const CUPMatrix<float>& a2, const CUPMatrix<int>& batchY) {
         if (rows != a2.rows || cols != a2.cols) {
             *this = CUPMatrix<float>{ a2.rows, a2.cols };
@@ -306,11 +283,6 @@ struct CUPMatrix : public PODMatrix<T> {
         cuA2Sub1Hot << <blocks, BLOCK_DIM >> > (getPod(), a2.getPod(), batchY.getPod());
         cudaDeviceSynchronize();
     }
-
-
-
-
-
 
     template <CUPTransMask transMask = CUPNoneTrans>
     INLINING void gemm(const CUPMatrix<T>& aMatrix, const CUPMatrix<T>& bMatrix, float alpha = 1.f, float beta = 0.f) {
@@ -377,21 +349,10 @@ struct CUPMatrix : public PODMatrix<T> {
 
         if (M != rows || N != cols) {
             raii.release();
-            std::cout << "CUPMatrix<T>::gemm reallocate\n";
+            //std::cout << "CUPMatrix<T>::gemm reallocate\n";
             *this = CUPMatrix<T>{ M, N };
         }
         float* C = data;
-
-        //std::cout << "aTransOpt: " << aTransOpt << "\n"
-        //    << "bTransOpt: " << bTransOpt << "\n"
-        //    << "M: " << M << "\n"
-        //    << "N: " << N << "\n"
-        //    << "K: " << K << "\n"
-        //    << "alpha: " << alpha << "\n"
-        //    << "lda: " << lda << "\n"
-        //    << "ldb: " << ldb << "\n"
-        //    << "beta: " << beta << "\n"
-        //    << "N: " << N << "\n";
 
         int ldc = N;
         size_t workspaceSize = 0;
@@ -446,33 +407,7 @@ struct CUPMatrix : public PODMatrix<T> {
         cudaDeviceSynchronize();
     }
 
-    //void dup_rows(const CUPMatrix<T>& row, int numRows) {
-    //    assert(row.cols == 1); // we are assuming a row vector here!
-    //    // O(log n) memcpy calls
-    //    if (rows != numRows || cols != row.cols) {
-    //        raii.release();
-    //        *this = CUPMatrix<T>{ numRows, row.rows };
-    //    }
-
-    //    if (row.size() != cols) {
-    //        int _rowSize = row.size();
-    //        throw std::runtime_error("wrong size " + std::to_string(_rowSize));
-    //    }
-
-    //    size_t rowSize = sizeof(T) * row.size();
-    //    CU_CHECK(cudaMemcpy(data, row.data, rowSize, cudaMemcpyDeviceToDevice));
-
-    //    size_t copied = 1;
-    //    char* d = reinterpret_cast<char*>(data);
-
-    //    // double copy region every time
-    //    while (copied < rows) {
-    //        size_t rowsToCopy = std::min(copied, rows - copied);
-    //        CU_CHECK(cudaMemcpy(d + copied * rowSize, d, rowsToCopy * rowSize, cudaMemcpyDeviceToDevice));
-    //        copied += rowsToCopy;
-    //    }
-    //}
-    INLINING void dupRows2(const CUPMatrix<T>& row, int numRows) {
+    INLINING void dupRows(const CUPMatrix<T>& row, int numRows) {
         assert(row.cols == 1); // we are assuming a row vector here!
         // O(log n) memcpy calls
         if (rows != numRows || cols != row.rows) {
@@ -490,11 +425,9 @@ struct CUPMatrix : public PODMatrix<T> {
         dim3 gridDim((cols + blockDim.x - 1) / blockDim.x,
             (rows + blockDim.y - 1) / blockDim.y);
 
-        cuDupRows2 << <gridDim, blockDim >> > (getPod(), row.getPod());
+        cuDupRows << <gridDim, blockDim >> > (getPod(), row.getPod());
         cudaDeviceSynchronize();
-
     }
-
 
     INLINING void relu() {
         int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
@@ -517,7 +450,7 @@ struct CUPMatrix : public PODMatrix<T> {
 
     INLINING void softmax() requires std::same_as<T, float> {
         // matrix.cols is currently hardcoded for this function. TODO unhardcode!
-        constexpr int BlockSize = 32; // must be multiple of warp size
+        constexpr int BlockSize = 32; // must be multiple of warp size?
         if (cols > BlockSize) {
             throw std::runtime_error("unhardcode me");
         }
@@ -542,10 +475,8 @@ struct CUPMatrix : public PODMatrix<T> {
         cppBenchEnd(benchId);
     }
 
-
     CUPRAII<T> raii{ 0 };
 };
-
 
 __global__ void cuA2Sub1Hot(PODMatrix<float> dL_dz2, PODMatrix<float> a2, PODMatrix<int> batchY) {
     //    int outputSize = a2.cols;
@@ -653,7 +584,7 @@ __global__ void cuRelu(PODMatrix<float> mat) {
         mat.data[idx] = mat.data[idx] > 0 ? mat.data[idx] : 0;
 }
 
-__global__ void cuDupRows2(PODMatrix<float> dst, PODMatrix<float> srcRow) {
+__global__ void cuDupRows(PODMatrix<float> dst, PODMatrix<float> srcRow) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -672,7 +603,6 @@ __global__ void cuPositiveMask(PODMatrix<float> mat, const PODMatrix<float> mask
     }
 
 }
-
 
 template <typename T>
 CUPMatrix<T> readIdxXubyte(const std::string& dataFile) {
@@ -812,7 +742,7 @@ public:
         EigenMatrix a2Eig = _testEig::softmax(z2Eig);
 #endif // COMPARE_MLP_WITH_EIGEN
         //z1.dup_rows(bias_1, x.rows);
-        z1.dupRows2(bias_1, x.rows);
+        z1.dupRows(bias_1, x.rows);
         z1.gemm(x, weight_1, 1.f, 1.f);
 
         a1 = z1;
@@ -820,7 +750,7 @@ public:
 
         //z2 = (a1 * weight_2) +(rowWise) bias_2;
         //z2.dup_rows(bias_2, x.rows);
-        z2.dupRows2(bias_2, x.rows);
+        z2.dupRows(bias_2, x.rows);
         z2.gemm(a1, weight_2, 1.f, 1.f);
 
         a2 = z2;
@@ -931,16 +861,12 @@ public:
         bias_1.computeBias(dL_dz1, divM, lr);
 
 #ifdef COMPARE_MLP_WITH_EIGEN
-        //EigenMatrix y_one_hotCmp = _testEig::fromCUPMatrix<float>(y_one_hot);
-        //_testEig::cmpMat(y_one_hotCmp, y_one_hotEig);
         EigenMatrix dL_dz2Cmp = _testEig::fromCUPMatrix<float>(dL_dz2);
         _testEig::cmpMat(dL_dz2Cmp, dL_dz2Eig);
         EigenMatrix dL_dW2Cmp = _testEig::fromCUPMatrix<float>(dL_dW2);
         _testEig::cmpMat(dL_dW2Cmp, dL_dW2Eig);
         EigenMatrix weight_2Cmp = _testEig::fromCUPMatrix<float>(weight_2);
         _testEig::cmpMat(weight_2Cmp, weight_2Eig);
-        //EigenMatrix dL_db2Cmp = _testEig::fromCUPMatrix<float>(dL_db2);
-        //_testEig::cmpMat(dL_db2Cmp, dL_db2Eig);
         EigenMatrix bias_2Cmp = _testEig::fromCUPMatrix<float>(bias_2);
         _testEig::cmpMat(bias_2Cmp, bias_2Eig, 1e-3f);
         EigenMatrix dL_da1Cmp = _testEig::fromCUPMatrix<float>(dL_da1);
@@ -951,8 +877,6 @@ public:
         _testEig::cmpMat(dL_dW1Cmp, dL_dW1Eig);
         EigenMatrix weight_1Cmp = _testEig::fromCUPMatrix<float>(weight_1);
         _testEig::cmpMat(weight_1Cmp, weight_1Eig);
-        //EigenMatrix dL_db1Cmp = _testEig::fromCUPMatrix<float>(dL_db1);
-        //_testEig::cmpMat(dL_db1Cmp, dL_db1Eig);
         EigenMatrix bias_1Cmp = _testEig::fromCUPMatrix<float>(bias_1);
         _testEig::cmpMat(bias_1Cmp, bias_1Eig, 1e-3f);
 #endif
@@ -962,36 +886,9 @@ public:
 
     void evalEpoch(const CUPMatrix<float>& x, const CUPMatrix<int>& y, int epoch) {
         std::cout << "evalEpoch not implemented\n";
-        float epsilon = 1.0e-6F;
         forward(x); // output is in `a2` member var
 
-        //__m256 epoch_loss = _mm256_setzero_ps();
-        //size_t outSize = a2.cols;
-        //int batchSize = a2.rows;
-        //for (int row = 0; row < batchSize; row += 8) {
-        //    __m256 probs = _mm256_set_ps(
-        //        *a2.data32(row, y.at32(y.gemmOffset + row)),
-        //        *a2.data32(row + 1, y.at32(y.gemmOffset + row + 1)),
-        //        *a2.data32(row + 2, y.at32(y.gemmOffset + row + 2)),
-        //        *a2.data32(row + 3, y.at32(y.gemmOffset + row + 3)),
-        //        *a2.data32(row + 4, y.at32(y.gemmOffset + row + 4)),
-        //        *a2.data32(row + 5, y.at32(y.gemmOffset + row + 5)),
-        //        *a2.data32(row + 6, y.at32(y.gemmOffset + row + 6)),
-        //        *a2.data32(row + 7, y.at32(y.gemmOffset + row + 7)));
-        //    probs = _mm256_add_ps(probs, _mm256_set1_ps(epsilon)); // against log(0)
-        //    probs = _mm256_log_ps(probs);
-        //    epoch_loss = _mm256_add_ps(epoch_loss, probs);
-        //}
-
-        //float epoch_loss_sum = sum256f(epoch_loss);
-        //epoch_loss_sum /= -int(batchSize);
-        //losses.push_back(epoch_loss_sum);
-
-        //std::cout << (epoch + 1) << "\t" << epoch_loss_sum << std::endl;
-
-
-
-#ifdef COMPARE_MLP_WITH_EIGEN_EPOCH
+        float epsilon = 1.0e-6F;
         auto a2ptr = thrust::device_pointer_cast(a2.data);
         EigenMatrix yEig = _testEig::fromCUPMatrix<int>(y);
         assert(yEig.cols() == 1);
@@ -1005,12 +902,6 @@ public:
         }
         epoch_lossEig /= -a2.rows;
         std::cout << (epoch + 1) << "\t" << epoch_lossEig << std::endl;
-
-        //float lastLoss = losses.back();
-        //if (std::fabsf(epoch_lossEig - lastLoss) > 0.001f) {
-        //    throw std::runtime_error("wrong loss");
-        //}
-#endif // COMPARE_MLP_WITH_EIGEN
 
     }
 
@@ -1039,14 +930,11 @@ public:
     CUPMatrix<float> a2; //< dim [batchSize x outputSize]
 
     // temp matrices
-    CUPMatrix<float> y_one_hot;
     CUPMatrix<float> dL_dz2;
     CUPMatrix<float> dL_dW2; // dim [hiddenSize x outputSize]
-    CUPMatrix<float> dL_db2;
     CUPMatrix<float> dL_da1;
     CUPMatrix<float> dL_dz1;
     CUPMatrix<float> dL_dW1;
-    CUPMatrix<float> dL_db1;
     CUPMatrix<float> ones;
 
     std::vector<float> losses;
@@ -1183,7 +1071,6 @@ void test_gemm(int m, int n, int k) {
         _testEig::cmpMat(eigCmp, mlpCmp);
     }
 
-
     // Test 3: MlpATrans
     {
         CUPMatrix<float> mata = CUPMatrix<float>::Random(k, m * 8, -5.f, 5.f);
@@ -1275,7 +1162,7 @@ void test_dup_rows(int m, int n) {
 
     CUPMatrix<float> row = CUPMatrix<float>::Random(n * 8, 1, -5.f, 5.f);
     EigenMatrix eigRow = _testEig::fromCUPMatrix<float>(row);
-    mlp.dupRows2(row, mlp.rows);
+    mlp.dupRows(row, mlp.rows);
     EigenMatrix mlpCmp = _testEig::fromCUPMatrix<float>(mlp);
     EigenMatrix eigCmp = _testEig::dup_rows(eig, eigRow);
 
