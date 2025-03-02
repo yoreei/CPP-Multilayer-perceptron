@@ -10,6 +10,16 @@ inline constexpr bool DEBUG = true;
 inline constexpr bool DEBUG = false;
 #endif
 
+#if defined(DISABLE_INLINING)
+  #if defined(_MSC_VER)
+    #define INLINING __declspec(noinline)
+  #else
+    #define INLINING __attribute__((noinline))
+  #endif
+#else
+  #define INLINING 
+#endif
+
 using Time = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
 Time getTime() {

@@ -23,6 +23,7 @@
 #include <thrust/extrema.h>
 #include <cub/cub.cuh>
 
+#define DISABLE_INLINING
 #include "common/cppUtil.h"
 #include "common/cuUtil.h"
 #include "common/simdUtil.h"
@@ -34,6 +35,7 @@
 #undef COMPARE_MLP_WITH_EIGEN_EPOCH
 // compute loss function (slows down epochs)
 #undef EVAL_EPOCH
+
 
 /*
 CUP = Cuda (multilayer) Perceptron
@@ -268,8 +270,61 @@ struct CUPMatrix : public PODMatrix<T> {
         return raii.size / cols;
     }
 
+    //INLINING void a2Sub1Hot(const CUPMatrix<float>& a2, CUPMatrix<float>& y_one_hot, const CUPMatrix<int>& batchY) {
+    //    int outputSize = a2.cols;
+    //    y_one_hot.oneHot(batchY, outputSize);
+
+    //    // 2. Compute gradient at output layer:
+    //    // dL_dz2 = a2 - y_one_hot;
+    //    *this = a2;
+    //    float alpha = -1.f;
+    //    CUBLAS_CHECK(
+    //        cublasSaxpy(     // y = y + alpha * x
+    //            CublasHandle::get(),
+    //            size(), //n
+    //            &alpha,		 //alpha
+    //            y_one_hot.data, //x
+    //            1,			//incx
+    //            data,    //y
+    //            1			//incy
+    //        )
+    //    );
+
+    //}
+
+    INLINING void a2Sub1Hot(const CUPMatrix<float>& a2, const CUPMatrix<int>& batchY) {
+        if (rows != a2.rows || cols != a2.cols) {
+            *this = CUPMatrix<float>{ a2.rows, a2.cols };
+        }
+
+        assert(batchY.rows == rows);
+
+        int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
+        cuA2Sub1Hot << <blocks, BLOCK_DIM >> > (getPod(), a2.getPod(), batchY.getPod());
+        cudaDeviceSynchronize();
+    }
+
+
+
+    INLINING void computeBias(const CUPMatrix<float>& dL_dz2, CUPMatrix<float>& dL_db2, CUPMatrix<float>& ones, float divM, float lr) {
+        dL_db2.colwiseSumAlpha(dL_dz2, ones, divM);
+
+        float alpha = -lr;
+        CUBLAS_CHECK(
+            cublasSaxpy(		 // y = y + alpha * x
+                CublasHandle::get(),
+                dL_db2.size(), // x.size
+                &alpha,			 // alpha
+                dL_db2.data, // x
+                1,				 // incx
+                data, // y
+                1 				 // incy
+            )
+        );
+    }
+
     template <CUPTransMask transMask = CUPNoneTrans>
-    void gemm(const CUPMatrix<T>& aMatrix, const CUPMatrix<T>& bMatrix, float alpha = 1.f, float beta = 0.f) {
+    INLINING void gemm(const CUPMatrix<T>& aMatrix, const CUPMatrix<T>& bMatrix, float alpha = 1.f, float beta = 0.f) {
 
         const float* A = aMatrix.data;
         const float* B = bMatrix.data;
@@ -370,7 +425,7 @@ struct CUPMatrix : public PODMatrix<T> {
             workspaceSize);
     }
 
-    void colwiseSumAlpha(const CUPMatrix<T>& mat, CUPMatrix<T>& ones, float alpha, float beta = 0.f) {
+    INLINING void colwiseSumAlpha(const CUPMatrix<T>& mat, CUPMatrix<T>& ones, float alpha, float beta = 0.f) {
         // resize `ones` if necessary:
         if (ones.cols != 1 || ones.rows < mat.rows) {
             std::cout << "ColwiseSumAlpha reallocate ones\n";
@@ -395,7 +450,7 @@ struct CUPMatrix : public PODMatrix<T> {
 
     }
 
-    void positiveMask(const CUPMatrix<T>& mask) {
+    INLINING void positiveMask(const CUPMatrix<T>& mask) {
         assert(cols == mask.cols && rows == mask.rows);
         int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
         cuPositiveMask << <blocks, BLOCK_DIM >> > (getPod(), mask.getPod());
@@ -428,7 +483,7 @@ struct CUPMatrix : public PODMatrix<T> {
     //        copied += rowsToCopy;
     //    }
     //}
-    void dupRows2(const CUPMatrix<T>& row, int numRows) {
+    INLINING void dupRows2(const CUPMatrix<T>& row, int numRows) {
         assert(row.cols == 1); // we are assuming a row vector here!
         // O(log n) memcpy calls
         if (rows != numRows || cols != row.rows) {
@@ -452,13 +507,13 @@ struct CUPMatrix : public PODMatrix<T> {
     }
 
 
-    void relu() {
+    INLINING void relu() {
         int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
         cuRelu << <blocks, BLOCK_DIM >> > (getPod());
         cudaDeviceSynchronize();
     }
 
-    void oneHot(const CUPMatrix<int>& y, int maxVal) {
+    INLINING void oneHot(const CUPMatrix<int>& y, int maxVal) {
         assert(y.cols == 1);
         if (raii.size != y.rows * maxVal) {
             *this = CUPMatrix(y.rows, maxVal);
@@ -469,10 +524,9 @@ struct CUPMatrix : public PODMatrix<T> {
         int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
         cuOneHot << <blocks, BLOCK_DIM >> > (getPod(), y.getPod());
         cudaDeviceSynchronize();
-
     }
 
-    void softmax() requires std::same_as<T, float> {
+    INLINING void softmax() requires std::same_as<T, float> {
         // matrix.cols is currently hardcoded for this function. TODO unhardcode!
         constexpr int BlockSize = 32; // must be multiple of warp size
         if (cols > BlockSize) {
@@ -486,6 +540,24 @@ struct CUPMatrix : public PODMatrix<T> {
 
     CUPRAII<T> raii{ 0 };
 };
+
+
+__global__ void cuA2Sub1Hot(PODMatrix<float> dL_dz2, PODMatrix<float> a2, PODMatrix<int> batchY) {
+    //    int outputSize = a2.cols;
+    //    y_one_hot.oneHot(batchY, outputSize);
+    //    dL_dz2 = a2 - y_one_hot;
+
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int row = idx / a2.cols;
+    int col = idx % a2.cols;
+    if (idx < a2.size()) {
+        dL_dz2.data[idx] = a2.data[idx];
+        if (col == batchY.data[row]) {
+            dL_dz2.data[idx] -= 1.f;
+        }
+    }
+
+}
 
 //BlockSize given as template because we need it to be constexpr
 template <int BlockSize>
@@ -693,7 +765,7 @@ public:
     startRow: this batch begins at startRow
     batchRows: this batch ends at endRow = startRow + batchSize
     */
-    void forward(const CUPMatrix<float>& x) {
+    INLINING void forward(const CUPMatrix<float>& x) {
 #ifdef COMPARE_MLP_WITH_EIGEN
         EigenMatrix batchEig = _testEig::fromCUPMatrix<float>(x);
         EigenMatrix weight_1Eig = _testEig::fromCUPMatrix<float>(weight_1);
@@ -741,7 +813,7 @@ public:
     startRow: this batch begins at startRow
     batchRows: this batch ends at endRow = startRow + batchSize
     */
-    void backward(const CUPMatrix<float>& batchX, const CUPMatrix<int>& batchY, float lr) {
+    INLINING void backward(const CUPMatrix<float>& batchX, const CUPMatrix<int>& batchY, float lr) {
         float divM = 1.f / batchX.rows;
 #ifdef COMPARE_MLP_WITH_EIGEN
         EigenMatrix batchYEig = _testEig::fromCUPMatrix<int>(batchY); // note int->float
@@ -777,30 +849,12 @@ public:
         EigenMatrix bias_1Eig = _testEig::fromCUPMatrix<float>(bias_1);
         bias_1Eig -= lr * dL_db1Eig.transpose();
 #endif // COMPARE_MLP_WITH_EIGEN
-        int outputSize = a2.cols;
-        y_one_hot.oneHot(batchY, outputSize);
-
-        // 2. Compute gradient at output layer:
-        // dL_dz2 = a2 - y_one_hot;
-        dL_dz2 = a2;
-        float alpha = -1.f;
-        CUBLAS_CHECK(
-            cublasSaxpy(     // y = y + alpha * x
-                CublasHandle::get(),
-                dL_dz2.size(), //n
-                &alpha,		 //alpha
-                y_one_hot.data, //x
-                1,			//incx
-                dL_dz2.data,    //y
-                1			//incy
-            )
-        );
-
+        dL_dz2.a2Sub1Hot(a2, batchY);
         // 3. Gradients for the second (output) layer:
         dL_dW2.gemm<CUPATrans>(a1, dL_dz2, divM);
 
         // weight_2 -= lr * dL_dW2
-        alpha = -lr;
+        float alpha = -lr;
 
         CUBLAS_CHECK(
             cublasSaxpy( // y = y + alpha * x
@@ -815,21 +869,8 @@ public:
         );
 
         // dL_db2 = dL_dz2.colwise().sum() * divM
-        dL_db2.colwiseSumAlpha(dL_dz2, ones, divM);
-
         // bias_2 -= lr * dL_db2
-        alpha = -lr;
-        CUBLAS_CHECK(
-            cublasSaxpy(		 // y = y + alpha * x
-                CublasHandle::get(),
-                dL_db2.size(), // x.size
-                &alpha,			 // alpha
-                dL_db2.data, // x
-                1,				 // incx
-                bias_2.data, // y
-                1 				 // incy
-            )
-        );
+        bias_2.computeBias(dL_dz2, dL_db2, ones, divM, lr);
 
         // 4. Backpropagate to the hidden layer:
         dL_da1.gemm<CUPBTrans>(dL_dz2, weight_2);
@@ -856,25 +897,11 @@ public:
 
 
         // dL_db1 = dL_dz1.colwise().sum() * divM
-        dL_db1.colwiseSumAlpha(dL_dz1, ones, divM);
-
-        //bias_1 -= lr * dL_db1
-        alpha = -lr;
-        CUBLAS_CHECK(
-            cublasSaxpy(		 // y = y + alpha * x
-                CublasHandle::get(),
-                dL_db1.size(), // x.size
-                &alpha,			 // alpha
-                dL_db1.data, // x
-                1,				 // incx
-                bias_1.data, // y
-                1 				 // incy
-            )
-        );
+        bias_1.computeBias(dL_dz1, dL_db1, ones, divM, lr);
 
 #ifdef COMPARE_MLP_WITH_EIGEN
-        EigenMatrix y_one_hotCmp = _testEig::fromCUPMatrix<float>(y_one_hot);
-        _testEig::cmpMat(y_one_hotCmp, y_one_hotEig);
+        //EigenMatrix y_one_hotCmp = _testEig::fromCUPMatrix<float>(y_one_hot);
+        //_testEig::cmpMat(y_one_hotCmp, y_one_hotEig);
         EigenMatrix dL_dz2Cmp = _testEig::fromCUPMatrix<float>(dL_dz2);
         _testEig::cmpMat(dL_dz2Cmp, dL_dz2Eig);
         EigenMatrix dL_dW2Cmp = _testEig::fromCUPMatrix<float>(dL_dW2);
@@ -899,6 +926,8 @@ public:
         _testEig::cmpMat(bias_1Cmp, bias_1Eig);
 #endif
     }
+
+
 
     void evalEpoch(const CUPMatrix<float>& x, const CUPMatrix<int>& y, int epoch) {
         std::cout << "evalEpoch not implemented\n";
