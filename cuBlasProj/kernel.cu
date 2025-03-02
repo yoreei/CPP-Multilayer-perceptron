@@ -57,20 +57,34 @@ uint32_t swapEndian(uint32_t val) {
 class CublasHandle {
 public:
     static cublasHandle_t& get() {
-        if (mustInit) {
+        if (mustInitCublas) {
             CUBLAS_CHECK(cublasCreate(&cublasHandle));
-            mustInit = false;
+            mustInitCublas = false;
         }
         return cublasHandle;
     }
+
+    static cublasLtHandle_t& getLt() {
+        if (mustInitLt) {
+            cublasLtCreate(&ltHandle);
+            mustInitLt = false;
+        }
+        return ltHandle;
+    }
+
     static void free() {
-        if (!mustInit) {
+        if (!mustInitCublas) {
             cublasDestroy(cublasHandle);
+        }
+        if (!mustInitLt) {
+            cublasLtDestroy(ltHandle);
         }
     }
 private:
-    inline static bool mustInit = true;
+    inline static bool mustInitCublas = true;
     inline static cublasHandle_t cublasHandle;
+    inline static bool mustInitLt = true;
+    inline static cublasLtHandle_t ltHandle;
 };
 
 /* host-only, owning class */
@@ -103,7 +117,7 @@ public:
     CUPRAII& operator=(const CUPRAII& rhs) {
         size_t bytes = sizeof(T) * rhs.size;
         if (this->size != rhs.size) {
-            std::cout << "CUPRAII operator= reallocating!\n";
+            //std::cout << "CUPRAII operator= reallocating!\n";
             release();
             this->size = rhs.size;
             CU_CHECK(cudaMalloc(&ptr, bytes));
@@ -335,14 +349,10 @@ struct CUPMatrix : public PODMatrix<T> {
         //    << "beta: " << beta << "\n"
         //    << "N: " << N << "\n";
 
-        cublasLtHandle_t ltHandle;
-        cublasLtCreate(&ltHandle);
-
         int ldc = N;
         size_t workspaceSize = 0;
         void* workspace = nullptr; // or allocate a workspace if desired
-
-        LtSgemm(ltHandle,
+        LtSgemm(CublasHandle::getLt(),
             aTransOpt,
             bTransOpt,
             M,
@@ -358,7 +368,6 @@ struct CUPMatrix : public PODMatrix<T> {
             ldc,
             workspace,
             workspaceSize);
-        cublasLtDestroy(ltHandle);
     }
 
     void colwiseSumAlpha(const CUPMatrix<T>& mat, CUPMatrix<T>& ones, float alpha, float beta = 0.f) {
@@ -393,10 +402,36 @@ struct CUPMatrix : public PODMatrix<T> {
         cudaDeviceSynchronize();
     }
 
-    void dup_rows(const CUPMatrix<T>& row, int numRows) {
+    //void dup_rows(const CUPMatrix<T>& row, int numRows) {
+    //    assert(row.cols == 1); // we are assuming a row vector here!
+    //    // O(log n) memcpy calls
+    //    if (rows != numRows || cols != row.cols) {
+    //        raii.release();
+    //        *this = CUPMatrix<T>{ numRows, row.rows };
+    //    }
+
+    //    if (row.size() != cols) {
+    //        int _rowSize = row.size();
+    //        throw std::runtime_error("wrong size " + std::to_string(_rowSize));
+    //    }
+
+    //    size_t rowSize = sizeof(T) * row.size();
+    //    CU_CHECK(cudaMemcpy(data, row.data, rowSize, cudaMemcpyDeviceToDevice));
+
+    //    size_t copied = 1;
+    //    char* d = reinterpret_cast<char*>(data);
+
+    //    // double copy region every time
+    //    while (copied < rows) {
+    //        size_t rowsToCopy = std::min(copied, rows - copied);
+    //        CU_CHECK(cudaMemcpy(d + copied * rowSize, d, rowsToCopy * rowSize, cudaMemcpyDeviceToDevice));
+    //        copied += rowsToCopy;
+    //    }
+    //}
+    void dupRows2(const CUPMatrix<T>& row, int numRows) {
         assert(row.cols == 1); // we are assuming a row vector here!
         // O(log n) memcpy calls
-        if (rows != numRows || cols != row.cols) {
+        if (rows != numRows || cols != row.rows) {
             raii.release();
             *this = CUPMatrix<T>{ numRows, row.rows };
         }
@@ -406,19 +441,16 @@ struct CUPMatrix : public PODMatrix<T> {
             throw std::runtime_error("wrong size " + std::to_string(_rowSize));
         }
 
-        size_t rowSize = sizeof(T) * row.size();
-        CU_CHECK(cudaMemcpy(data, row.data, rowSize, cudaMemcpyDeviceToDevice));
+        int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
+        dim3 blockDim(32, 8);
+        dim3 gridDim((cols + blockDim.x - 1) / blockDim.x,
+            (rows + blockDim.y - 1) / blockDim.y);
 
-        size_t copied = 1;
-        char* d = reinterpret_cast<char*>(data);
+        cuDupRows2 << <gridDim, blockDim >> > (getPod(), row.getPod());
+        cudaDeviceSynchronize();
 
-        // double copy region every time
-        while (copied < rows) {
-            size_t rowsToCopy = std::min(copied, rows - copied);
-            CU_CHECK(cudaMemcpy(d + copied * rowSize, d, rowsToCopy * rowSize, cudaMemcpyDeviceToDevice));
-            copied += rowsToCopy;
-        }
     }
+
 
     void relu() {
         int blocks = (size() + BLOCK_DIM - 1) / BLOCK_DIM;
@@ -517,6 +549,17 @@ __global__ void cuRelu(PODMatrix<float> mat) {
     if (idx < mat.size())
         mat.data[idx] = mat.data[idx] > 0 ? mat.data[idx] : 0;
 }
+
+__global__ void cuDupRows2(PODMatrix<float> dst, PODMatrix<float> srcRow) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+
+    // Ensure we're within bounds
+    if (col < dst.cols && row < dst.rows) {
+        dst.data[row * dst.cols + col] = srcRow.data[col];
+    }
+}
+
 __global__ void cuPositiveMask(PODMatrix<float> mat, const PODMatrix<float> mask) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < mat.size()) {
@@ -665,14 +708,16 @@ public:
 
         EigenMatrix a2Eig = _testEig::softmax(z2Eig);
 #endif // COMPARE_MLP_WITH_EIGEN
-        z1.dup_rows(bias_1, x.rows);
+        //z1.dup_rows(bias_1, x.rows);
+        z1.dupRows2(bias_1, x.rows);
         z1.gemm(x, weight_1, 1.f, 1.f);
 
         a1 = z1;
         a1.relu();
 
         //z2 = (a1 * weight_2) +(rowWise) bias_2;
-        z2.dup_rows(bias_2, x.rows);
+        //z2.dup_rows(bias_2, x.rows);
+        z2.dupRows2(bias_2, x.rows);
         z2.gemm(a1, weight_2, 1.f, 1.f);
 
         a2 = z2;
@@ -1170,7 +1215,7 @@ void test_dup_rows(int m, int n) {
 
     CUPMatrix<float> row = CUPMatrix<float>::Random(n * 8, 1, -5.f, 5.f);
     EigenMatrix eigRow = _testEig::fromCUPMatrix<float>(row);
-    mlp.dup_rows(row, mlp.rows);
+    mlp.dupRows2(row, mlp.rows);
     EigenMatrix mlpCmp = _testEig::fromCUPMatrix<float>(mlp);
     EigenMatrix eigCmp = _testEig::dup_rows(eig, eigRow);
 
@@ -1268,7 +1313,7 @@ void testRun() {
 
 int main() {
     enableFpExcept();
-    //testRun();
+    testRun();
 
     CUPMatrix<float> x = readIdxXubyte<float>("assets.ignored/train-images.idx3-ubyte");
     CUPMatrix<int> y = readIdxXubyte<int>("assets.ignored/train-labels.idx1-ubyte");
