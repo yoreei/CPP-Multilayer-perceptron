@@ -23,6 +23,8 @@ inline constexpr bool DEBUG = false;
 #define INLINING 
 #endif
 
+#define fastIO ios::sync_with_stdio(false); cin.tie(nullptr);
+
 using TimePoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
 TimePoint getTimePoint() {
@@ -151,3 +153,26 @@ struct Traceable {
         //std::cout << msg << std::endl;
     }
 };
+
+/*************************************
+**** ALGORITHMS
+*************************************/
+/*
+    std::vector<int> in{ 1,2,3,4,5 };
+    std::vector<int> out (2, 0);
+    while (nextPermute(in, out)) {
+        int m = out[0];
+        int n = out[1];
+*/
+bool nextPermute(std::vector<int>& in, std::vector<int>& out) {
+
+    int n = in.size();
+    int k = out.size();
+    for (int i = 0; i < k; i++)
+    {
+        out[i] = in[i];
+    }
+    std::reverse(in.begin() + k, in.end());
+    return std::next_permutation(in.begin(), in.end());
+}
+

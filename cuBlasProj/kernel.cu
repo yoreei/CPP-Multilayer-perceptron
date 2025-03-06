@@ -1042,18 +1042,6 @@ namespace _testEig {
 //// ^TESTEIGEN
 ///////////////////////////////////////////////////
 
-bool nextPermute(std::vector<int>& in, std::vector<int>& out) {
-
-    int n = in.size();
-    int k = out.size();
-    for (int i = 0; i < k; i++)
-    {
-        out[i] = in[i];
-    }
-    std::reverse(in.begin() + k, in.end());
-    return std::next_permutation(in.begin(), in.end());
-}
-
 void test_gemm(int m, int n, int k) {
     // Test 1: MlpNoneTrans with multi-dim aMatrix
     {
