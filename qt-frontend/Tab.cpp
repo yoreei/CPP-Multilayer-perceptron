@@ -14,26 +14,10 @@ Tab::Tab(QWidget *parent)
     tabWidget = new QTabWidget;
     tabWidget->addTab(new DrawPredictTab(),tr("🖌️Draw Predict"));
     tabWidget->addTab(new BrowseBadTab(), tr("👎Browse Bad"));
-//! [0]
-
-//! [1] //! [2]
-    buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok
-//! [1] //! [3]
-                                     | QDialogButtonBox::Cancel);
-
-    connect(buttonBox, &QDialogButtonBox::accepted, this, &QDialog::accept);
-    connect(buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
-//! [2] //! [3]
-
-//! [4]
     QVBoxLayout *mainLayout = new QVBoxLayout;
     mainLayout->addWidget(tabWidget);
-    mainLayout->addWidget(buttonBox);
     setLayout(mainLayout);
-//! [4]
-
-//! [5]
-    setWindowTitle(tr("Tab Dialog"));
+    setWindowTitle(tr("MLP with C++"));
 }
 //! [5]
 
