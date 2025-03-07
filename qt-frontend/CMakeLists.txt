@@ -17,15 +17,17 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 
 set(PROJECT_SOURCES
         main.cpp
-        Example.cpp
-        Example.h
-        Example.ui
+        BrowseBad.cpp
+        BrowseBad.h
+        Tab.cpp
+        Tab.h
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(font-metrics
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
+        drawpredict.h drawpredict.cpp
     )
 # Define target properties for Android with Qt 6 as:
 #    set_property(TARGET font-metrics APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
