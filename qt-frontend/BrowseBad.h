@@ -2,7 +2,6 @@
 
 #include <QPushButton>
 #include <QWidget>
-#include <memory>
 
 namespace Ui {
 class Example;

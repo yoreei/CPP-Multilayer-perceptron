@@ -35,7 +35,7 @@
 // compute loss function (slow!)
 #undef EVAL_EPOCH
 
-inline constexpr int EPOCHS = 110;
+inline constexpr int EPOCHS = 11;
 inline constexpr int BATCH_SIZE = 128;
 inline constexpr float LR = 0.01f;
 
@@ -95,11 +95,11 @@ private:
 template <typename T>
 class CUPRAII : public Traceable<CUPRAII<T>> {
 public:
-    CUPRAII(const std::vector<T>& cpuVec) : size(cpuVec.size()) {
+    explicit CUPRAII(const std::vector<T>& cpuVec) : size(cpuVec.size()) {
         ptr = cuAllocCpyFromHost(cpuVec);
     }
 
-    CUPRAII(int size) : size(size) {
+    explicit CUPRAII(int size) : size(size) {
         if constexpr (DEBUG) {
             std::vector<T> cpuVec(size, std::bit_cast<T>(0xBADDBADD));
             ptr = cuAllocCpyFromHost(cpuVec);
@@ -108,6 +108,12 @@ public:
             int bytes = sizeof(T) * size;
             CU_CHECK(cudaMalloc(&ptr, bytes));
         }
+    }
+
+    explicit CUPRAII(int size, T* cpuData) {
+        int bytes = sizeof(T) * size;
+        CU_CHECK(cudaMalloc(&ptr, bytes));
+        CU_CHECK(cudaMemcpy(ptr, cpuData, bytes, cudaMemcpyHostToDevice));
     }
 
     ~CUPRAII() {
@@ -195,23 +201,28 @@ struct CUPMatrix : public PODMatrix<T> {
     using PODMatrix<T>::size;
     using PODMatrix<T>::getIdx;
     CUPMatrix() = default;
-    CUPMatrix(const std::vector<T>& cpuVec, int rows, int cols) : PODMatrix<T>{ rows, cols, nullptr }, raii(cpuVec) {
+    explicit CUPMatrix(const std::vector<T>& cpuVec, int rows, int cols) : PODMatrix<T>{ rows, cols, nullptr }, raii(cpuVec) {
         if (rows * cols != cpuVec.size()) {
             throw std::runtime_error("wrong dims");
         }
         data = raii.ptr;
     }
-    CUPMatrix(int rows, int cols) : PODMatrix<T>{ rows, cols, nullptr }, raii(rows* cols) {
+    explicit CUPMatrix(int rows, int cols) : PODMatrix<T>{ rows, cols, nullptr }, raii(rows* cols) {
         data = raii.ptr;
     }
 
-    CUPMatrix(int rows, int cols, T val) : PODMatrix<T>{ rows, cols, nullptr } {
+    explicit CUPMatrix(int rows, int cols, T val) : PODMatrix<T>{ rows, cols, nullptr } {
         std::vector<T> cpuVec(rows * cols, val);
         raii = CUPRAII{ cpuVec };
         data = raii.ptr;
     }
 
-    CUPMatrix(const CUPRAII<T>& raii, int rows, int cols) : PODMatrix<T>{ rows, cols, nullptr }, raii(raii) {
+    explicit CUPMatrix(int rows, int cols, T* ptr) : PODMatrix<T>{ rows, cols, nullptr } {
+        raii = CUPRAII{ rows * cols, ptr };
+        data = raii.ptr;
+    }
+
+    explicit CUPMatrix(const CUPRAII<T>& raii, int rows, int cols) : PODMatrix<T>{ rows, cols, nullptr }, raii(raii) {
         data = raii.ptr;
     }
 
@@ -219,6 +230,7 @@ struct CUPMatrix : public PODMatrix<T> {
         int diff = rhs.data - rhs.raii.ptr;
         data = raii.ptr + diff;
     }
+
     CUPMatrix& operator=(const CUPMatrix& rhs) {
         raii = rhs.raii;
         rows = rhs.rows;
@@ -905,7 +917,7 @@ public:
 
     }
 
-    std::vector<int> predict(const CUPMatrix<float>& testX) {
+    std::vector<int> predictVect(const CUPMatrix<float>& testX) {
         forward(testX);
 
         std::vector<int> predictions(testX.rows, 0xBADDBADD);
@@ -917,6 +929,17 @@ public:
         }
 
         return predictions;
+    }
+
+    void predict(float* sample, float* result) {
+        CUPMatrix<float> testX{ 1, 28*28, sample };
+        forward(testX);
+
+        if (a2.cols!= 10) {
+            throw std::runtime_error("wrong dim");
+        }
+        int bytes = sizeof(float) * a2.cols;
+        CU_CHECK(cudaMemcpy(result, a2.raii.ptr, bytes, cudaMemcpyDeviceToHost));
     }
 
     CUPMatrix<float> weight_1; //< dim [inputSize x hiddenSize]
@@ -1262,7 +1285,7 @@ int main() {
     Seconds elapsed = getTimePoint() - begin;
     std::cout << "training time: " << elapsed << "\n";
 
-    std::vector<int> predictions = mlp.predict(testX);
+    std::vector<int> predictions = mlp.predictVect(testX);
     std::vector<int> testYEig = testY.cpyFromDevice();
     assert(predictions.size() == testYEig.size());
 
@@ -1274,6 +1297,12 @@ int main() {
     }
     std::cout << "Test Accuracy: " << acc / float(predictions.size()) << std::endl;
     cppBenchPrint();
+    float predictResult[10];
+    float predictSample[28 * 28];
+    mlp.predict(predictSample, predictResult);
+    for (int i = 0; i < std::size(predictResult); ++i) {
+        std::cout << predictResult[i] << "\n";
+    }
 
     CublasHandle::free();
     return 0;
