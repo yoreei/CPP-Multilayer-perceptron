@@ -29,6 +29,12 @@
 #include "common/simdUtil.h"
 #include "common/cublasUtil.h"
 
+#define CUMLP_EXPORTS
+#ifdef CUMLP_EXPORTS
+#define CUMLP_API __declspec(dllexport)
+#else
+#define CUMLP_API __declspec(dllimport)
+#endif
 
 // define to compare my implementation with an eigen implementation (known to work) (slow)
 #undef COMPARE_MLP_WITH_EIGEN
@@ -191,7 +197,40 @@ struct PODMatrix {
 
 };
 
-/* owning type, host only */
+template <typename T>
+struct CPUMatrix : public PODMatrix<T> {
+    CPUMatrix(int rows, int cols) {
+        data = new T[rows * cols];
+        memset(data, std::bit_cast<T>(0xBA), sizeof(T) * rows * cols);
+    }
+    ~CPUMatrix() {
+        delete data;
+    }
+    CPUMatrix(const CPUMatrix& rhs) = delete;
+    CPUMatrix(CPUMatrix&& rhs) {
+        rows = rhs.rows;
+        cols = rhs.cols;
+        data = rhs.data;
+
+        rhs.data = nullptr;
+        rhs.rows = 0;
+        rhs.cols = 0;
+    }
+    &CPUMatrix(const CPUMatrix& rhs) = delete;
+    &CPUMatrix(CPUMatrix&& rhs) {
+        rows = rhs.rows;
+        cols = rhs.cols;
+        data = rhs.data;
+
+        rhs.data = nullptr;
+        rhs.rows = 0;
+        rhs.cols = 0;
+        return *this;
+    }
+
+};
+
+/* owning type, stores data on gpu, used in host only */
 template <typename T>
 struct CUPMatrix : public PODMatrix<T> {
     using PODMatrix<T>::rows;
@@ -617,7 +656,7 @@ __global__ void cuPositiveMask(PODMatrix<float> mat, const PODMatrix<float> mask
 }
 
 template <typename T>
-CUPMatrix<T> readIdxXubyte(const std::string& dataFile) {
+CPUMatrix<T> readIdxXubyte(const std::string& dataFile) {
     // T == float: we are reading data
     // T == int: we are reading labels
     std::cout << "loading " << dataFile << std::endl;
@@ -633,39 +672,46 @@ CUPMatrix<T> readIdxXubyte(const std::string& dataFile) {
     magicNumber = swapEndian(magicNumber);
     std::cout << "Magic Number: " << magicNumber << "\n";
 
-    constexpr int numDim = std::is_same_v<T, int> ? 1 : 3;
-    std::array<uint32_t, numDim> dim;
-    for (int i = 0; i < numDim; ++i) {
-        dataIfstream.read(reinterpret_cast<char*>(&(dim[i])), sizeof(uint32_t));
-        dim[i] = swapEndian(dim[i]);
-        std::cout << "Dim" << i << ": " << dim[i] << "\n";
-    }
+    uint32_t numImages;
+    dataIfstream.read(reinterpret_cast<char*>(&numImages), sizeof(uint32_t));
+    numImages = swapEndian(numImages);
+    std::cout << "Number of Images: " << numImages << "\n";
+
+    size_t colSize = [&]() {
+        zzz check these
+        if (magicNumber == 12345678) {
+            return 1;
+        }
+        else if (magicNumber == 87654321) {
+            uint32_t imgRow;
+            dataIfstream.read(reinterpret_cast<char*>(&imgRow), sizeof(uint32_t));
+            imgRow = swapEndian(imgRow);
+
+            uint32_t imgCol;
+            dataIfstream.read(reinterpret_cast<char*>(&imgCol), sizeof(uint32_t));
+            imgCol = swapEndian(imgCol);
+
+            return imgRow * imgCol;
+        }
+        else {
+            throw std::runtime_error("wrong magic");
+        }
+    };
 
     // Read data:
-    int totalElements = std::accumulate(dim.cbegin(), dim.cend(), 1, [](int a, const int& b) {return a * b; });
-    std::vector<T> cpuData(totalElements, 0xBADDBADD);
-    for (int i = 0; i < cpuData.size(); ++i) {
+    CPUMatrix<T> mat(numImages, colSize);
+    for (int i = mat.data; i < mat.end(); ++i) {
         uint8_t byte;
         dataIfstream.read(reinterpret_cast<char*>(&byte), sizeof(byte));
         if (!dataIfstream) {
             throw std::runtime_error("error reading pos " + i);
         }
 
-
-        cpuData[i] = T(byte);
+        i* = T(byte);
         if constexpr (std::is_same_v<T, float>) {
             cpuData[i] /= 255.f;
         }
     }
-
-    // lambda for guaranteed copy elision
-    CUPMatrix<T> mat = [&] {
-        if constexpr (std::is_same_v<T, int>)
-            return CUPMatrix<T>{ cpuData, int(dim[0]), 1 };
-        else
-            return CUPMatrix<T>{ cpuData, int(dim[0]), int(dim[1] * dim[2]) };
-        }();
-
 
     return mat;
 }
@@ -932,10 +978,10 @@ public:
     }
 
     void predict(float* sample, float* result) {
-        CUPMatrix<float> testX{ 1, 28*28, sample };
+        CUPMatrix<float> testX{ 1, 28 * 28, sample };
         forward(testX);
 
-        if (a2.cols!= 10) {
+        if (a2.cols != 10) {
             throw std::runtime_error("wrong dim");
         }
         int bytes = sizeof(float) * a2.cols;
@@ -1269,23 +1315,41 @@ void testRun() {
     std::cout << "Passed all unit tests\n";
 }
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+    CUMLP_API void* init() {
+        CUPMatrix<float> x = readIdxXubyte<float>("assets.ignored/train-images.idx3-ubyte");
+        CUPMatrix<int> y = readIdxXubyte<int>("assets.ignored/train-labels.idx1-ubyte");
+        constexpr size_t hiddenSize = 128;
+        return new MLP{ x, y, hiddenSize, BATCH_SIZE, LR, EPOCHS };
+    }
+
+    CUMLP_API void destroy(void* hndl) {
+        delete reinterpret_cast<MLP*>(hndl);
+    }
+
+    CUMLP_API void predict(void* hndl, float* sample, float* output) {
+        reinterpret_cast<MLP*>(hndl)->predict(sample, output);
+    }
+#ifdef __cplusplus
+} // extern "C"
+#endif
+
 int main() {
     enableFpExcept();
     testRun();
 
-    CUPMatrix<float> x = readIdxXubyte<float>("assets.ignored/train-images.idx3-ubyte");
-    CUPMatrix<int> y = readIdxXubyte<int>("assets.ignored/train-labels.idx1-ubyte");
-    CUPMatrix<float> testX = readIdxXubyte<float>("assets.ignored/t10k-images.idx3-ubyte");
+    void* hndl = init();
+
+    CPUMatrix<float> testX = readIdxXubyte<float>("assets.ignored/t10k-images.idx3-ubyte");
+    PODMatrix<float> a2 = predict(hndl, testX);
+    PODMatrix<int> predictions = discrete_predict(a2);
+
+    destroy(hndl);
+    CublasHandle::free();
+
     CUPMatrix<int> testY = readIdxXubyte<int>("assets.ignored/t10k-labels.idx1-ubyte");
-
-    constexpr size_t hiddenSize = 128;
-
-    TimePoint begin = getTimePoint();
-    MLP mlp{ x, y, hiddenSize, BATCH_SIZE, LR, EPOCHS };
-    Seconds elapsed = getTimePoint() - begin;
-    std::cout << "training time: " << elapsed << "\n";
-
-    std::vector<int> predictions = mlp.predictVect(testX);
     std::vector<int> testYEig = testY.cpyFromDevice();
     assert(predictions.size() == testYEig.size());
 
@@ -1299,12 +1363,18 @@ int main() {
     cppBenchPrint();
     float predictResult[10];
     float predictSample[28 * 28];
-    mlp.predict(predictSample, predictResult);
-    for (int i = 0; i < std::size(predictResult); ++i) {
-        std::cout << predictResult[i] << "\n";
-    }
 
-    CublasHandle::free();
+
+    //CUPMatrix<float> x = readIdxXubyte<float>("assets.ignored/train-images.idx3-ubyte");
+    //CUPMatrix<int> y = readIdxXubyte<int>("assets.ignored/train-labels.idx1-ubyte");
+
+    //constexpr size_t hiddenSize = 128;
+
+    TimePoint begin = getTimePoint();
+    //MLP mlp{ x, y, hiddenSize, BATCH_SIZE, LR, EPOCHS };
+    Seconds elapsed = getTimePoint() - begin;
+    std::cout << "training time: " << elapsed << "\n";
+
     return 0;
 }
 
