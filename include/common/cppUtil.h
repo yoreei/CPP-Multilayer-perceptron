@@ -49,6 +49,8 @@ struct IdentityHasher {
 using BenchId = size_t;
 static std::unordered_map<BenchId, std::tuple<std::string, double>, IdentityHasher> cppBenchMap;
 static std::unordered_map<BenchId, double, IdentityHasher> cppBenchActive;
+
+/* not thread-safe! */
 BenchId cppBench(const std::string& name) {
     BenchId hashValue = std::hash<std::string>{}(name);
     if (cppBenchMap.find(hashValue) == cppBenchMap.cend()) {
@@ -66,6 +68,7 @@ void cppBenchEnd(BenchId id) {
     std::get<double>(cppBenchMap[id]) += getEpochTime<Milli>().count() - cppBenchActive[id];
     cppBenchActive.erase(id);
 }
+
 void cppBenchPrint() {
     if (cppBenchActive.size() != 0) {
         std::cout << "cppBenchActive is not empty!!!\n";
