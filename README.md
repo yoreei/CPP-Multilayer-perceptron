@@ -24,6 +24,9 @@ Eigen project uses .noalias(), memory preallocation & 32 threads to maximize per
 
 All projects comiled for AVX2 & /fp:fast
 
+### Ryzen Bench
+Ryzen ???, Rtx 3070 Ti
+
 Mini-batch size: 64
 - Eigen : 5.9s
 - openBlas & custom SIMD: 5.1s
@@ -33,6 +36,10 @@ Mini-batch size: 128
 - Eigen\*: 111s
 - openBlas & custom SIMD:  3.2s
 - cuBlas: ?
+
+### Intel Laptop Bench
+
+### Eigen Remark
 
 Notice that Eigen has a problem with larger minibatches, specifically, matrices with more than 9984 elements are handled extremely slowly.
 This is not the case for openBlas & my custom SIMD operations, which are faster for larger minibatches (as they should be!)

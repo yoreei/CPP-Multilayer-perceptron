@@ -825,13 +825,13 @@ public:
         int maxSamples = m * (x.rows / m);
         for (int epoch = 0; epoch < epochs; ++epoch) {
 
-            Time begin = getTime();
+            TimePoint begin = getTimePoint();
             for (int i = 0; i < maxSamples; i += m) {
                 trainData.setGemmView(i, m);
                 forward(x);
                 backward(x, y);
             }
-            Seconds elapsed = getTime() - begin;
+            Seconds elapsed = getTimePoint() - begin;
             std::cout << "epoch time: " << elapsed << std::endl;
 
 #ifdef EVAL_EPOCH
@@ -966,25 +966,8 @@ namespace _testEig {
     }
 }
 
-
 //// ^TESTEIGEN
 ///////////////////////////////////////////////////
-
-
-bool nextPermute(std::vector<int>& in, std::vector<int>& out) {
-
-    int n = in.size();
-    int k = out.size();
-    for (int i = 0; i < k; i++)
-    {
-        out[i] = in[i];
-    }
-    std::reverse(in.begin() + k, in.end());
-    return std::next_permutation(in.begin(), in.end());
-}
-
-
-
 
 void test_gemm(int m, int n, int k) {
     // Test 1: MlpNoneTrans with multi-dim aMatrix
@@ -1156,7 +1139,7 @@ int main() {
     int miniBatchSize = 128;
     MLP mlp{ inputSize, hiddenSize, outputSize, miniBatchSize, 0.01f };
 
-    Time begin = getTime();
+    TimePoint begin = getTimePoint();
 
     int epochs = 10;
     mlp.train(trainData, epochs);
@@ -1173,7 +1156,7 @@ int main() {
 
     std::cout << "Test Accuracy: " << sum256i(acc) / float(testData.y.gemmRows) << std::endl;
 
-    Seconds elapsed = getTime() - begin;
+    Seconds elapsed = getTimePoint() - begin;
     std::cout << "benchmark: " << elapsed;
 
 
