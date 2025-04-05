@@ -9,7 +9,10 @@ class DrawPredict : public QWidget
 public:
     explicit DrawPredict(QWidget *parent = nullptr);
 
-signals:
+private slots:
+    // Slot that handles the signal from TabletCanvas
+    void onBitmapUpdated();
+
 private:
     void drawGrid(QPainter *painter);
     virtual void paintEvent(QPaintEvent *) override;

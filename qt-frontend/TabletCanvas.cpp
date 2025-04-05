@@ -62,6 +62,7 @@ void TabletCanvas::tabletEvent(QTabletEvent *event)
                 updateBrush(event);
                 QPainter painter(&m_pixmap);
                 paintPixmap(painter, event);
+                emit bitmapUpdated();
             }
             break;
         case QEvent::TabletRelease:

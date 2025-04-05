@@ -70,6 +70,10 @@ private:
         qreal pressure = 0;
         qreal rotation = 0;
     } lastPoint;
+
+signals:
+    // Declare a signal that can be emitted when needed
+    void bitmapUpdated();
 };
 //! [0]
 
