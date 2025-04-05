@@ -38,6 +38,7 @@ if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
         ${EXTERNAL_HEADERS}
     )
     target_include_directories(font-metrics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../cuBlasMlp)
+    target_link_libraries(font-metrics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/dll/cuBlasMlp.lib)
 
 # Define target properties for Android with Qt 6 as:
 #    set_property(TARGET font-metrics APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
@@ -83,3 +84,10 @@ install(TARGETS font-metrics
 if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(font-metrics)
 endif()
+
+add_custom_command(TARGET font-metrics POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_CURRENT_SOURCE_DIR}/dll/cuBlasMlp.dll
+        $<TARGET_FILE_DIR:font-metrics>
+)
+

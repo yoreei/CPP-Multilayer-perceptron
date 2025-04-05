@@ -1317,13 +1317,13 @@ void testRun() {
 }
 
 /************************************
-**** API DEFINITIONS
+**** C API DEFINITIONS
 *************************************/
 
-void* init() {
-	CPUMatrix<float> x = readIdxXubyte<float>("assets.ignored/train-images.idx3-ubyte");
+void* cppmlp_init(const char* directory) {
+	CPUMatrix<float> x = readIdxXubyte<float>(std::string(directory) + "/train-images.idx3-ubyte");
 	GPUMatrix<float> xGpu = GPUMatrix<float>(x);
-	CPUMatrix<int> y = readIdxXubyte<int>("assets.ignored/train-labels.idx1-ubyte");
+	CPUMatrix<int> y = readIdxXubyte<int>(std::string(directory) + "/train-labels.idx1-ubyte");
 	GPUMatrix<int> yGpu = GPUMatrix<int>(y);
 	constexpr size_t hiddenSize = 128;
 
@@ -1334,12 +1334,12 @@ void* init() {
 	return mlpAsToken;
 }
 
-void destroy(void* hndl) {
+void cppmlp_destroy(void* hndl) {
 	delete reinterpret_cast<MLP*>(hndl);
 }
 
 /// output size is 10; sample size is one image
-void predict(void* hndl, const float* sample, float* output) {
+void cppmlp_predict(void* hndl, const float* sample, float* output) {
 	reinterpret_cast<MLP*>(hndl)->predict(sample, output);
 }
 
@@ -1348,7 +1348,7 @@ int main() {
     enableFpExcept();
     testRun();
 
-    void* hndl = init();
+    void* hndl = cppmlp_init("assets.ignored");
 
     BenchId testBench = cppBench("Iterate Test Images");
     CPUMatrix<float> testX = readIdxXubyte<float>("assets.ignored/t10k-images.idx3-ubyte");
@@ -1357,7 +1357,7 @@ int main() {
 	CPUMatrix<int> testY = readIdxXubyte<int>("assets.ignored/t10k-labels.idx1-ubyte");
     for (size_t i = 0; i < testX.rows; ++i) {
         const float* imagePtr = testX.data + testX.getIdx(i, 0);
-		predict(hndl, imagePtr, output);
+		cppmlp_predict(hndl, imagePtr, output);
 
         // check accuracy
 		const auto maxIter = std::max_element(output, output + std::size(output));
@@ -1370,7 +1370,7 @@ int main() {
     cppBenchEnd(testBench);
     std::cout << "Test Accuracy: " << numCorrect / float(testY.size()) << std::endl;
     
-    destroy(hndl);
+    cppmlp_destroy(hndl);
     CublasHandle::free();
     cppBenchPrint();
 

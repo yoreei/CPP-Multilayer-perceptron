@@ -20,6 +20,7 @@ DrawPredict::DrawPredict(QWidget *parent)
     connect(canvas, &TabletCanvas::bitmapUpdated,
             this, &DrawPredict::onBitmapUpdated);
 
+    mlpHandle = cppmlp_init("../assets.ignored");
     QHBoxLayout *bottomLayout = new QHBoxLayout;
 
     // Create a widget that acts like a table with 1 header row and 1 body row.
@@ -60,6 +61,11 @@ DrawPredict::DrawPredict(QWidget *parent)
     layout->addWidget(bottomLayoutWidget, 0);
 
     setLayout(layout);
+}
+
+DrawPredict::~DrawPredict()
+{
+    cppmlp_destroy(mlpHandle);
 }
 
 void DrawPredict::onBitmapUpdated()
