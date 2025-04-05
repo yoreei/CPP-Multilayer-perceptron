@@ -32,6 +32,7 @@
     <ProjectGuid>{4098e745-17d1-44b0-adcb-5f07ce338cc4}</ProjectGuid>
     <RootNamespace>openBlasProj</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>openBlasMlp</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
