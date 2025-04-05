@@ -29,12 +29,12 @@ inline int sum256i(__m256i vec) {
     return _mm_cvtsi128_si32(sum128);
 }
 
-size_t pad8(size_t num) {
+inline size_t pad8(size_t num) {
     return (num % 8 == 0) ? num : ((num + 7) / 8) * 8;
 }
 
 
-__m256 cvt8epu8_8ps(const uint64_t chars8) {
+inline __m256 cvt8epu8_8ps(const uint64_t chars8) {
     // load the 64‑bit value into the lower part of a __m128i and zero the upper part
     __m128i chars = _mm_cvtsi64_si128(static_cast<long long>(chars8));
 
@@ -50,7 +50,7 @@ __m256 cvt8epu8_8ps(const uint64_t chars8) {
     return _mm256_cvtepi32_ps(combined);
 }
 
-__m256 rand256ps(float rMin = 0.f, float rMax = 1.f) {
+inline __m256 rand256ps(float rMin = 0.f, float rMax = 1.f) {
     static std::random_device rd;
     static std::mt19937 gen(rd());
     std::uniform_real_distribution<float> dist(rMin, rMax);
@@ -64,7 +64,7 @@ __m256 rand256ps(float rMin = 0.f, float rMax = 1.f) {
     return _mm256_load_ps(randomFloats.data());
 }
 
-void seqRan256(__m256* begin, const __m256* end, float rMin = 0.f, float rMax = 1.f) {
+inline void seqRan256(__m256* begin, const __m256* end, float rMin = 0.f, float rMax = 1.f) {
     while (begin != end) {
         *begin = rand256ps(rMin, rMax);
         ++begin;

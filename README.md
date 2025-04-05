@@ -39,6 +39,16 @@ Mini-batch size: 128
 
 ### Intel Laptop Bench
 
+Mini-batch size: 64
+- Eigen : ?
+- openBlas & custom SIMD: ?
+- cuBlas: ?
+
+Mini-batch size: 128
+- Eigen\*: ?
+- openBlas & custom SIMD:  ?
+- cuBlas: ?
+
 ### Eigen Remark
 
 Notice that Eigen has a problem with larger minibatches, specifically, matrices with more than 9984 elements are handled extremely slowly.

@@ -16,7 +16,7 @@
 
 #define CU_CHECK(val) cu_check( (val), #val, __FILE__, __LINE__ )
 
-const char* cublasGetErrorString(cublasStatus_t status) {
+inline const char* cublasGetErrorString(cublasStatus_t status) {
     switch (status) {
     case CUBLAS_STATUS_SUCCESS:
         return "CUBLAS_STATUS_SUCCESS";
@@ -40,7 +40,7 @@ const char* cublasGetErrorString(cublasStatus_t status) {
     }
 }
 
-void cu_check(cudaError_t result, char const* const func, const char* const file, int const line) {
+inline void cu_check(cudaError_t result, char const* const func, const char* const file, int const line) {
     if (result) {
         std::cerr << "CUDA error = " << static_cast<unsigned int>(result) << " at " <<
             file << ":" << line << " '" << func << "' \n";
@@ -51,7 +51,7 @@ void cu_check(cudaError_t result, char const* const func, const char* const file
 
 /* Allocate on Device & Copy data from host to device. Returns device pointer */
 template <typename T>
-T* cuAllocCpyFromHost(const std::vector<T>& h_vector) {
+inline T* cuAllocCpyFromHost(const std::vector<T>& h_vector) {
 
     T* d_array;
     size_t bytes = sizeof(T) * h_vector.size();
@@ -63,7 +63,7 @@ T* cuAllocCpyFromHost(const std::vector<T>& h_vector) {
 
 /* Copy data from device to host */
 template <typename T>
-void cuCpyFromDevice(std::vector<T>& h_vector, const T* d_array) {
+inline void cuCpyFromDevice(std::vector<T>& h_vector, const T* d_array) {
     cudaError_t err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
         printf("Kernel execution failed: %s\n", cudaGetErrorString(err));
@@ -75,7 +75,7 @@ void cuCpyFromDevice(std::vector<T>& h_vector, const T* d_array) {
 }
 
 /* Wait for active kernels to complete. Report any errors. Returns time of execution derived from parameters */
-double cuHostJoinDevice(cudaEvent_t& start, cudaEvent_t& stop) {
+inline double cuHostJoinDevice(cudaEvent_t& start, cudaEvent_t& stop) {
     cudaEventRecord(stop, 0);
     cudaError_t err = cudaEventSynchronize(stop);
     if (err != cudaSuccess) {
@@ -92,7 +92,7 @@ double cuHostJoinDevice(cudaEvent_t& start, cudaEvent_t& stop) {
     return milliseconds / 1000;
 }
 
-void cuStartTimer(cudaEvent_t& start, cudaEvent_t& stop) {
+inline void cuStartTimer(cudaEvent_t& start, cudaEvent_t& stop) {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);

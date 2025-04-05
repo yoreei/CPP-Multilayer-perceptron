@@ -6,12 +6,14 @@
 #include <unordered_map>
 #include <string>
 #include <tuple>
+#include <iostream>
 
 #ifndef NDEBUG
 inline constexpr bool DEBUG = true;
 #else
 inline constexpr bool DEBUG = false;
 #endif
+
 
 #if defined(DISABLE_INLINING)
 #if defined(_MSC_VER)
@@ -25,9 +27,13 @@ inline constexpr bool DEBUG = false;
 
 #define fastIO ios::sync_with_stdio(false); cin.tie(nullptr);
 
+/************************************
+**** TIME
+************************************/
+
 using TimePoint = std::chrono::time_point<std::chrono::high_resolution_clock>;
 
-TimePoint getTimePoint() {
+inline TimePoint getTimePoint() {
     return std::chrono::high_resolution_clock::now();
 }
 
@@ -36,7 +42,7 @@ using Milli = std::chrono::duration<double, std::milli>;
 using Seconds = std::chrono::duration<double, std::ratio<1>>;
 
 template <typename Unit>
-Unit getEpochTime() {
+inline Unit getEpochTime() {
     return getTimePoint().time_since_epoch();
 }
 
@@ -51,7 +57,7 @@ static std::unordered_map<BenchId, std::tuple<std::string, double>, IdentityHash
 static std::unordered_map<BenchId, double, IdentityHasher> cppBenchActive;
 
 /* not thread-safe! */
-BenchId cppBench(const std::string& name) {
+inline BenchId cppBench(const std::string& name) {
     BenchId hashValue = std::hash<std::string>{}(name);
     if (cppBenchMap.find(hashValue) == cppBenchMap.cend()) {
         std::get<std::string>(cppBenchMap[hashValue]) = name;
@@ -61,7 +67,7 @@ BenchId cppBench(const std::string& name) {
     return hashValue;
 }
 
-void cppBenchEnd(BenchId id) {
+inline void cppBenchEnd(BenchId id) {
     if (cppBenchActive.find(id) == cppBenchActive.cend()) {
         throw std::runtime_error("wrong bench id");
     }
@@ -69,19 +75,39 @@ void cppBenchEnd(BenchId id) {
     cppBenchActive.erase(id);
 }
 
-void cppBenchPrint() {
+inline void cppBenchPrint() {
     if (cppBenchActive.size() != 0) {
         std::cout << "cppBenchActive is not empty!!!\n";
     }
     for (const auto& e : cppBenchMap) {
         // e.second is a <std::string, double> tuple
-        std::cout << std::get<std::string>(e.second) << ": " << std::get<double>(e.second) << "\n";
+        double time = std::get<double>(e.second); // Milli 
+        std::string unit = "ms";
+
+        if (time >= 1000.f) {
+            time /= 1000.f;
+            unit = "s";
+        }
+
+        if (time >= 60) {
+            time /= 60;
+            unit = "m";
+        }
+
+        std::cout << std::get<std::string>(e.second) << ": " << time << unit << "\n";
     }
 }
 // ^Bench
 
+inline uint32_t swapEndian(uint32_t val) {
+    return ((val >> 24) & 0xff) |
+        ((val << 8) & 0xff0000) |
+        ((val >> 8) & 0xff00) |
+        ((val << 24) & 0xff000000);
+}
+
 // Convert a pixel (float) to a character for visualization.
-char ASCIIArtFromFloat(float f) {
+inline char ASCIIArtFromFloat(float f) {
     if (f > 0.7f) {
         return '#';
     }
@@ -99,7 +125,7 @@ char ASCIIArtFromFloat(float f) {
     }
 }
 
-void enableFpExcept() {
+inline void enableFpExcept() {
 #if defined(_MSC_VER) && !defined(__clang__)
     // Clear the exception masks for division by zero, invalid operation, and overflow.
     // This means these exceptions will be raised.
@@ -114,7 +140,7 @@ void enableFpExcept() {
 }
 
 template <typename Iterator>
-void randSeq(Iterator begin, Iterator end, std::iter_value_t<Iterator> rMin = 0, std::iter_value_t<Iterator> rMax = 1) {
+inline void randSeq(Iterator begin, Iterator end, std::iter_value_t<Iterator> rMin = 0, std::iter_value_t<Iterator> rMax = 1) {
     using T = std::iter_value_t<Iterator>;
     static std::random_device rd;
     static std::mt19937 gen(rd());
@@ -136,23 +162,36 @@ void randSeq(Iterator begin, Iterator end, std::iter_value_t<Iterator> rMin = 0,
         ++begin;
     }
 }
+/**************************************
+**** LOGGING
+**************************************/
+
+template<typename T>
+inline void cppLog(const std::span<T>& arr) {
+    std::cout << "[";
+    for (size_t i = 0; i < arr.size(); ++i) {
+        std::cout << arr[i] << ", ";
+    }
+    std::cout << "]\n";
+
+}
 
 // A CRTP base class that instruments the special member functions.
 template <typename Derived>
 struct Traceable {
-    Traceable() { TraceableLog(std::string(typeid(Derived).name()) + ": default constructed"); }
-    Traceable(const Traceable&) { TraceableLog(std::string(typeid(Derived).name()) + ": copy constructed"); }
-    Traceable(Traceable&&) { TraceableLog(std::string(typeid(Derived).name()) + ": move constructed"); }
-    Traceable& operator=(const Traceable&) {
+    inline Traceable() { TraceableLog(std::string(typeid(Derived).name()) + ": default constructed"); }
+    inline Traceable(const Traceable&) { TraceableLog(std::string(typeid(Derived).name()) + ": copy constructed"); }
+    inline Traceable(Traceable&&) { TraceableLog(std::string(typeid(Derived).name()) + ": move constructed"); }
+    inline Traceable& operator=(const Traceable&) {
         TraceableLog(std::string(typeid(Derived).name()) + ": copy assigned");
         return *this;
     }
-    Traceable& operator=(Traceable&&) {
+    inline Traceable& operator=(Traceable&&) {
         TraceableLog(std::string(typeid(Derived).name()) + ": move assigned");
         return *this;
     }
-    ~Traceable() { TraceableLog(std::string(typeid(Derived).name()) + ": destructed"); }
-    static void TraceableLog(const std::string& msg) {
+    inline ~Traceable() { TraceableLog(std::string(typeid(Derived).name()) + ": destructed"); }
+    inline static void TraceableLog(const std::string& msg) {
         //std::cout << msg << std::endl;
     }
 };
@@ -167,7 +206,7 @@ struct Traceable {
         int m = out[0];
         int n = out[1];
 */
-bool nextPermute(std::vector<int>& in, std::vector<int>& out) {
+inline bool nextPermute(std::vector<int>& in, std::vector<int>& out) {
 
     int n = in.size();
     int k = out.size();

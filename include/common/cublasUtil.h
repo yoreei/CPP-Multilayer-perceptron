@@ -4,8 +4,7 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
-cublasStatus_t
-LtSgemm(cublasLtHandle_t ltHandle,
+inline cublasStatus_t LtSgemm(cublasLtHandle_t ltHandle,
     cublasOperation_t transa,
     cublasOperation_t transb,
     int m,
