@@ -21,16 +21,24 @@ set(PROJECT_SOURCES
         BrowseBad.h
         Tab.cpp
         Tab.h
+        drawpredict.cpp
+        drawpredict.h
+        TabletCanvas.cpp
+        TabletCanvas.h
+)
+
+set(EXTERNAL_HEADERS
+        ../cuBlasMlp/cublas_mlp_api.h
 )
 
 if(${QT_VERSION_MAJOR} GREATER_EQUAL 6)
     qt_add_executable(font-metrics
         MANUAL_FINALIZATION
         ${PROJECT_SOURCES}
-        drawpredict.h drawpredict.cpp
-        TabletCanvas.h
-        TabletCanvas.cpp
+        ${EXTERNAL_HEADERS}
     )
+    target_include_directories(font-metrics PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../cuBlasMlp)
+
 # Define target properties for Android with Qt 6 as:
 #    set_property(TARGET font-metrics APPEND PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR
 #                 ${CMAKE_CURRENT_SOURCE_DIR}/android)

@@ -1343,6 +1343,7 @@ void predict(void* hndl, const float* sample, float* output) {
 	reinterpret_cast<MLP*>(hndl)->predict(sample, output);
 }
 
+#ifndef BUILD_DLL
 int main() {
     enableFpExcept();
     testRun();
@@ -1375,4 +1376,4 @@ int main() {
 
     return 0;
 }
-
+#endif // BUILD_DLL

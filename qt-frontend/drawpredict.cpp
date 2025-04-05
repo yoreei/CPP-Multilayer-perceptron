@@ -4,6 +4,8 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <qpainter.h>
+#include <QDebug>
+#include "cublas_mlp_api.h"
 
 namespace {
 constexpr auto SCALE = 20;
@@ -15,6 +17,8 @@ DrawPredict::DrawPredict(QWidget *parent)
     TabletCanvas* canvas = new TabletCanvas();
     QVBoxLayout *layout= new QVBoxLayout;
     layout->addWidget(canvas, 1);
+    connect(canvas, &TabletCanvas::bitmapUpdated,
+            this, &DrawPredict::onBitmapUpdated);
 
     QHBoxLayout *bottomLayout = new QHBoxLayout;
 
@@ -56,6 +60,11 @@ DrawPredict::DrawPredict(QWidget *parent)
     layout->addWidget(bottomLayoutWidget, 0);
 
     setLayout(layout);
+}
+
+void DrawPredict::onBitmapUpdated()
+{
+    qDebug() << "onBitMapUpdated";
 }
 
  void DrawPredict::paintEvent(QPaintEvent *)
