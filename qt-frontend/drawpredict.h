@@ -8,7 +8,7 @@ class DrawPredict : public QWidget
     Q_OBJECT
 public:
     explicit DrawPredict(QWidget *parent = nullptr);
-
+    ~DrawPredict() override;
 private slots:
     // Slot that handles the signal from TabletCanvas
     void onBitmapUpdated();
@@ -16,6 +16,8 @@ private slots:
 private:
     void drawGrid(QPainter *painter);
     virtual void paintEvent(QPaintEvent *) override;
+
+    void* mlpHandle = nullptr;
 };
 
 #endif // DRAWPREDICT_H
