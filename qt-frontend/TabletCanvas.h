@@ -24,6 +24,7 @@ class TabletCanvas : public QWidget
     Q_OBJECT
 
 public:
+    QPixmap m_pixmap;
     enum Valuator { PressureValuator, TangentialPressureValuator,
                     TiltValuator, VTiltValuator, HTiltValuator, NoValuator };
     Q_ENUM(Valuator)
@@ -59,7 +60,6 @@ private:
     Valuator m_colorSaturationValuator = NoValuator;
     Valuator m_lineWidthValuator = PressureValuator;
     QColor m_color = Qt::black;
-    QPixmap m_pixmap;
     QBrush m_brush;
     QPen m_pen;
     float penSize = 12;
@@ -73,7 +73,7 @@ private:
 
 signals:
     // Declare a signal that can be emitted when needed
-    void bitmapUpdated();
+    void bitmapUpdated(const QPixmap& pixmap);
 };
 //! [0]
 
