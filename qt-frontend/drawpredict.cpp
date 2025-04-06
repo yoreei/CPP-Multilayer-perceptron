@@ -7,6 +7,17 @@
 #include <QDebug>
 #include "cublas_mlp_api.h"
 
+#include <iostream>
+#include <thread>
+#include <mutex>
+#include <chrono>
+#include <atomic>
+
+std::mutex mtx;
+std::atomic<bool> terminate{false};  // workerThread exit signal
+
+
+
 namespace {
 constexpr auto SCALE = 20;
 }
@@ -14,11 +25,11 @@ constexpr auto SCALE = 20;
 DrawPredict::DrawPredict(QWidget *parent)
     : QWidget{parent}
 {
+    mWorker = std::thread(&DrawPredict::workerThread, this);
     TabletCanvas* canvas = new TabletCanvas();
+    mPixmap = &canvas->m_pixmap;
     QVBoxLayout *layout= new QVBoxLayout;
     layout->addWidget(canvas, 1);
-    connect(canvas, &TabletCanvas::bitmapUpdated,
-            this, &DrawPredict::onBitmapUpdated);
 
     mlpHandle = cppmlp_init("../assets.ignored");
     QHBoxLayout *bottomLayout = new QHBoxLayout;
@@ -66,11 +77,46 @@ DrawPredict::DrawPredict(QWidget *parent)
 DrawPredict::~DrawPredict()
 {
     cppmlp_destroy(mlpHandle);
+    terminate.store(true);
+    // Wait for the worker thread to finish.
+    mWorker.join();
 }
 
-void DrawPredict::onBitmapUpdated()
-{
-    qDebug() << "onBitMapUpdated";
+void DrawPredict::workerThread() {
+    float mlpOutput[10];
+
+    // wait for setup
+    zzz mPixmap is not valid. What is wrong?
+    while (!terminate.load() && !mPixmap) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    while (!terminate.load()) {
+        // prepare data:
+        int side = 28;
+        mImage = mPixmap->scaled(side, side).toImage().convertToFormat(QImage::Format_Grayscale8);
+        mImage.invertPixels();
+
+        const uchar* pixelPtr = mImage.bits();
+        for (int i = 0; i < side * side; ++i) {
+            mlpInput[i] = 0;
+
+            volatile uchar ho = *pixelPtr;
+
+            mlpInput[i] = (*(pixelPtr + i)) / 255.0f;
+        }
+
+        // predict:
+        std::lock_guard<std::mutex> lock(mtx);
+        cppmlp_predict(mlpHandle, mlpInput, mlpOutput);
+        for (int i = 0; i < 10; ++i) {
+            std::cout << mlpOutput[i] << " ";
+        }
+        std::cout << std::endl;
+
+        // (consider a condition variable)
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 }
 
  void DrawPredict::paintEvent(QPaintEvent *)
