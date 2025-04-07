@@ -12,6 +12,7 @@
 #include <QPoint>
 #include <QTabletEvent>
 #include <QWidget>
+#include <memory>
 
 QT_BEGIN_NAMESPACE
 class QPaintEvent;
@@ -24,7 +25,6 @@ class TabletCanvas : public QWidget
     Q_OBJECT
 
 public:
-    QPixmap m_pixmap;
     enum Valuator { PressureValuator, TangentialPressureValuator,
                     TiltValuator, VTiltValuator, HTiltValuator, NoValuator };
     Q_ENUM(Valuator)
@@ -44,7 +44,7 @@ public:
         { if (c.isValid()) m_color = c; }
     QColor color() const
         { return m_color; }
-    void initPixmap();
+    std::shared_ptr<QPixmap> initPixmap();
 protected:
     void tabletEvent(QTabletEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
@@ -64,6 +64,7 @@ private:
     QPen m_pen;
     float penSize = 12;
     bool m_deviceDown = false;
+    std::shared_ptr<QPixmap> mPixmapPtr = nullptr;
 
     struct Point {
         QPointF pos;
