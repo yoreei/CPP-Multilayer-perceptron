@@ -14,13 +14,11 @@ public:
 private:
     void drawGrid(QPainter *painter);
     virtual void paintEvent(QPaintEvent *) override;
-    QPixmap* mPixmap = nullptr;
-    QImage mImage;
-    float mlpInput[28*28]; // shared data
-    std::thread mWorker;
 
-    void* mlpHandle = nullptr;
-    void workerThread();
+    // worker thread stuff
+    std::thread mWorker;
+    std::shared_ptr<QPixmap> mPixmapPtr = nullptr;
+    std::atomic<bool> mTerminate{false};  // workerThread exit signal
 };
 
 #endif // DRAWPREDICT_H

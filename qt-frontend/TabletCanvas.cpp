@@ -27,7 +27,7 @@ TabletCanvas::TabletCanvas()
 //! [1]
 bool TabletCanvas::saveImage()
 {
-    return m_pixmap.scaled(28, 28).save("C:\\DATA\\git\\cpp-mlp\\assets.ignored\\tabletOut.png");
+    return mPixmapPtr->scaled(28, 28).save("C:\\DATA\\git\\cpp-mlp\\assets.ignored\\tabletOut.png");
 }
 
 // bool TabletCanvas::loadImage(const QString &file)
@@ -43,7 +43,7 @@ bool TabletCanvas::saveImage()
 
 void TabletCanvas::clear()
 {
-    m_pixmap.fill(Qt::white);
+    mPixmapPtr->fill(Qt::white);
     update();
 }
 
@@ -60,9 +60,9 @@ void TabletCanvas::tabletEvent(QTabletEvent *event)
 #endif
             if (m_deviceDown) {
                 updateBrush(event);
-                QPainter painter(&m_pixmap);
+                QPainter painter(mPixmapPtr.get());
                 paintPixmap(painter, event);
-                emit bitmapUpdated(m_pixmap);
+                // emit bitmapUpdated(mPixmapPtr.get()); // worker thread crunches constantly, no need to emit
             }
             break;
         case QEvent::TabletRelease:
@@ -78,23 +78,22 @@ void TabletCanvas::tabletEvent(QTabletEvent *event)
     event->accept();
 }
 
-void TabletCanvas::initPixmap()
+std::shared_ptr<QPixmap> TabletCanvas::initPixmap()
 {
     qreal dpr = devicePixelRatio();
-    QPixmap newPixmap = QPixmap(qRound(width() * dpr), qRound(height() * dpr));
-    newPixmap.setDevicePixelRatio(dpr);
-    newPixmap.fill(Qt::white);
-    m_pixmap = newPixmap;
+    mPixmapPtr = std::make_shared<QPixmap>(qRound(width() * dpr), qRound(height() * dpr));
+    mPixmapPtr->setDevicePixelRatio(dpr);
+    mPixmapPtr->fill(Qt::white);
+    return mPixmapPtr;
 }
 
 void TabletCanvas::paintEvent(QPaintEvent *event)
 {
-    if (m_pixmap.isNull())
-        initPixmap();
+    assert(mPixmapPtr);
     QPainter painter(this);
     QRect pixmapPortion = QRect(event->rect().topLeft() * devicePixelRatio(),
                                 event->rect().size() * devicePixelRatio());
-    painter.drawPixmap(event->rect().topLeft(), m_pixmap, pixmapPortion);
+    painter.drawPixmap(event->rect().topLeft(), *mPixmapPtr, pixmapPortion);
 }
 //! [4]
 
