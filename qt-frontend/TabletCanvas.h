@@ -46,14 +46,24 @@ public:
         { return m_color; }
     std::shared_ptr<QPixmap> initPixmap();
 protected:
+    // For table input
     void tabletEvent(QTabletEvent *event) override;
+
+    // For mouse input
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+
+    // For redrawing the widget
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
 
 private:
-    void paintPixmap(QPainter &painter, QTabletEvent *event);
     qreal pressureToWidth(qreal pressure);
+    void paintPixmap(QPainter &painter, QTabletEvent *event);
+    void paintPixmap(QPainter &painter, QMouseEvent *event);
     void updateBrush(const QTabletEvent *event);
+    void updateBrush(const QMouseEvent *event);
     //void updateCursor(const QTabletEvent *event);
 
     Valuator m_alphaChannelValuator = TangentialPressureValuator;
@@ -63,14 +73,14 @@ private:
     QBrush m_brush;
     QPen m_pen;
     float penSize = 12;
-    bool m_deviceDown = false;
+    bool mDrawing = false;
     std::shared_ptr<QPixmap> mPixmapPtr = nullptr;
 
     struct Point {
         QPointF pos;
         qreal pressure = 0;
         qreal rotation = 0;
-    } lastPoint;
+    } mLastPoint;
 
 signals:
     // Declare a signal that can be emitted when needed
