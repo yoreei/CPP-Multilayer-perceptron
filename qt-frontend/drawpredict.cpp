@@ -34,7 +34,7 @@ inline void workerThread(
         for (int i = 0; i < side * side; ++i) {
             mlpInput[i] = (*(pixelPtr + i)) / 255.0f;
         }
-        zzz drawing on the pixmap does not seem to change the return value zzz
+        //zzz drawing on the pixmap does not seem to change the return value zzz
 
         // predict:
         cppmlp_predict(mlpHandle, mlpInput, mlpOutput);
