@@ -80,7 +80,6 @@ void TabletCanvas::tabletEvent(QTabletEvent *event)
 
 void TabletCanvas::mousePressEvent(QMouseEvent *event)
 {
-    // Start a new stroke if the left mouse button is pressed
     if (event->button() == Qt::LeftButton) {
         mDrawing = true;
         mLastPoint.pos = event->position();
@@ -128,10 +127,13 @@ void TabletCanvas::paintEvent(QPaintEvent *event)
 //! [5]
 void TabletCanvas::paintPixmap(QPainter &painter, QTabletEvent *event)
 {
-    static qreal maxPenRadius = pressureToWidth(1.0);
     painter.setRenderHint(QPainter::Antialiasing);
 
-    switch (event->deviceType()) {
+    auto deviceType = event->deviceType();
+    // mouse and puck should not even land in this tablet specific-code
+    assert(deviceType != QInputDevice::DeviceType::Mouse && deviceType != QInputDevice::DeviceType::Puck);
+    deviceType = QInputDevice::DeviceType::Airbrush;
+    switch (deviceType) {
 //! [6]
         case QInputDevice::DeviceType::Airbrush:
             {
@@ -147,34 +149,19 @@ void TabletCanvas::paintPixmap(QPainter &painter, QTabletEvent *event)
                 update(QRect(event->position().toPoint() - QPoint(radius, radius), QSize(radius * 2, radius * 2)));
             }
             break;
-//! [6]
-        case QInputDevice::DeviceType::Puck:
-        case QInputDevice::DeviceType::Mouse:
-            {
-                const QString error(tr("This input device is not supported by the example."));
-#if QT_CONFIG(statustip)
-                QStatusTipEvent status(error);
-                QCoreApplication::sendEvent(this, &status);
-#else
-                qWarning() << error;
-#endif
-            }
-            break;
+
         default:
             {
                 const QString error(tr("Unknown tablet device - treating as stylus"));
-#if QT_CONFIG(statustip)
-                QStatusTipEvent status(error);
-                QCoreApplication::sendEvent(this, &status);
-#else
                 qWarning() << error;
-#endif
             }
             Q_FALLTHROUGH();
         case QInputDevice::DeviceType::Stylus: // e.g. one by wacom
             bool canRotate = event->pointingDevice()->capabilities().testFlag(QPointingDevice::Capability::Rotation);
             // one by wacom reports rotation capability but does not report rotation?
+            // if device is 'one by wacom' {
             canRotate = false;
+            // }
             if(canRotate) {
                 m_brush.setStyle(Qt::SolidPattern);
                 painter.setPen(Qt::NoPen);
@@ -193,6 +180,7 @@ void TabletCanvas::paintPixmap(QPainter &painter, QTabletEvent *event)
                 painter.drawConvexPolygon(poly);
                 update(poly.boundingRect().toRect());
             } else {
+                qreal maxPenRadius = pressureToWidth(1.0); // do we need this???
                 painter.setPen(m_pen);
                 painter.drawLine(mLastPoint.pos, event->position());
                 update(QRect(mLastPoint.pos.toPoint(), event->position().toPoint()).normalized()
@@ -204,8 +192,14 @@ void TabletCanvas::paintPixmap(QPainter &painter, QTabletEvent *event)
 
 void TabletCanvas::paintPixmap(QPainter &painter, QMouseEvent *event)
 {
-    painter.setPen(QPen(Qt::black, 5));  // Adjust the pen width/color as needed
-    painter.drawLine(mLastPoint.pos, event->pos());
+
+    qreal maxPenRadius = pressureToWidth(1.0); // do we need this???
+    painter.setPen(m_pen);
+    painter.drawLine(mLastPoint.pos, event->position());
+    update(QRect(mLastPoint.pos.toPoint(), event->position().toPoint()).normalized()
+           .adjusted(-maxPenRadius, -maxPenRadius, maxPenRadius, maxPenRadius));
+    // painter.setPen(QPen(Qt::black, 5));  // Adjust the pen width/color as needed
+    // painter.drawLine(mLastPoint.pos, event->position());
 }
 //! [5]
 
