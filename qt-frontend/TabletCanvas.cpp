@@ -49,20 +49,25 @@ void TabletCanvas::clear()
 
 void TabletCanvas::tabletEvent(QTabletEvent *event)
 {
+    updateBrush(event);
+    mCurrentPoint.pos = event->position();
+    mCurrentPoint.pressure = event->pressure();
+    mCurrentPoint.rotation = event->rotation();
+
     switch (event->type()) {
     case QEvent::TabletPress:
         mDrawing = true;
         break;
     case QEvent::TabletMove:
-//#ifndef Q_OS_IOS
+//#ifndef Q_OS_IOS // not interestedin iOS at this point
         //if (event->pointingDevice() && event->pointingDevice()->capabilities().testFlag(QPointingDevice::Capability::Rotation))
         //updateCursor(event);
 //#endif
         if (mDrawing) {
-            updateBrush(event);
             QPainter painter(mPixmapPtr.get());
-            paintPixmap(painter, event);
-            // emit bitmapUpdated(mPixmapPtr.get()); // worker thread crunches constantly, no need to emit
+            paintPixmap(painter);
+            // emit bitmapUpdated(mPixmapPtr.get()); // possible optimization:
+            // right now, worker thread crunches constantly, we could give it a rest with signals
         }
         break;
         case QEvent::TabletRelease:
@@ -71,40 +76,43 @@ void TabletCanvas::tabletEvent(QTabletEvent *event)
         default:
             break;
         }
-    mLastPoint.pos = event->position();
-    mLastPoint.pressure = event->pressure();
-    mLastPoint.rotation = event->rotation();
+
+
+    mLastPoint.pos      = mCurrentPoint.pos;
+    mLastPoint.pressure = mCurrentPoint.pressure;
+    mLastPoint.rotation = mCurrentPoint.rotation;
+
     update();
     event->accept();
 }
 
 void TabletCanvas::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton) {
-        mDrawing = true;
-        mLastPoint.pos = event->position();
-    }
 }
 
 void TabletCanvas::mouseMoveEvent(QMouseEvent *event)
 {
-    if (mDrawing && (event->buttons() & Qt::LeftButton)) {
+    if (event->buttons() & Qt::LeftButton) {
         updateBrush(event);
+        mCurrentPoint.pos = event->position();
+        mCurrentPoint.pressure = 1;
+        mCurrentPoint.rotation = 0;
+
         QPainter painter(mPixmapPtr.get());
-        paintPixmap(painter, event);
-        mLastPoint.pos = event->pos();
+        paintPixmap(painter);
+
+        mLastPoint.pos      = mCurrentPoint.pos;
+        mLastPoint.pressure = 1;
+        mLastPoint.rotation = 0;
+
         update();
+        event->accept();
     }
 }
 
 void TabletCanvas::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton && mDrawing) {
-        mDrawing = false;
-        update();
-    }
 }
-
 
 std::shared_ptr<QPixmap> TabletCanvas::initPixmap()
 {
@@ -125,83 +133,15 @@ void TabletCanvas::paintEvent(QPaintEvent *event)
 }
 //! [4]
 //! [5]
-void TabletCanvas::paintPixmap(QPainter &painter, QTabletEvent *event)
+void TabletCanvas::paintPixmap(QPainter &painter)
 {
     painter.setRenderHint(QPainter::Antialiasing);
-
-    auto deviceType = event->deviceType();
-    // mouse and puck should not even land in this tablet specific-code
-    assert(deviceType != QInputDevice::DeviceType::Mouse && deviceType != QInputDevice::DeviceType::Puck);
-    deviceType = QInputDevice::DeviceType::Airbrush;
-    switch (deviceType) {
-//! [6]
-        case QInputDevice::DeviceType::Airbrush:
-            {
-                painter.setPen(Qt::NoPen);
-                QRadialGradient grad(mLastPoint.pos, m_pen.widthF() * 10.0);
-                QColor color = m_brush.color();
-                color.setAlphaF(color.alphaF() * 0.25);
-                grad.setColorAt(0, m_brush.color());
-                grad.setColorAt(0.5, Qt::transparent);
-                painter.setBrush(grad);
-                qreal radius = grad.radius();
-                painter.drawEllipse(event->position(), radius, radius);
-                update(QRect(event->position().toPoint() - QPoint(radius, radius), QSize(radius * 2, radius * 2)));
-            }
-            break;
-
-        default:
-            {
-                const QString error(tr("Unknown tablet device - treating as stylus"));
-                qWarning() << error;
-            }
-            Q_FALLTHROUGH();
-        case QInputDevice::DeviceType::Stylus: // e.g. one by wacom
-            bool canRotate = event->pointingDevice()->capabilities().testFlag(QPointingDevice::Capability::Rotation);
-            // one by wacom reports rotation capability but does not report rotation?
-            // if device is 'one by wacom' {
-            canRotate = false;
-            // }
-            if(canRotate) {
-                m_brush.setStyle(Qt::SolidPattern);
-                painter.setPen(Qt::NoPen);
-                painter.setBrush(m_brush);
-                QPolygonF poly;
-                qreal halfWidth = pressureToWidth(mLastPoint.pressure);
-                QPointF brushAdjust(qSin(qDegreesToRadians(-mLastPoint.rotation)) * halfWidth,
-                                    qCos(qDegreesToRadians(-mLastPoint.rotation)) * halfWidth);
-                poly << mLastPoint.pos + brushAdjust;
-                poly << mLastPoint.pos - brushAdjust;
-                halfWidth = m_pen.widthF();
-                brushAdjust = QPointF(qSin(qDegreesToRadians(-event->rotation())) * halfWidth,
-                                      qCos(qDegreesToRadians(-event->rotation())) * halfWidth);
-                poly << event->position() - brushAdjust;
-                poly << event->position() + brushAdjust;
-                painter.drawConvexPolygon(poly);
-                update(poly.boundingRect().toRect());
-            } else {
-                qreal maxPenRadius = pressureToWidth(1.0); // do we need this???
-                painter.setPen(m_pen);
-                painter.drawLine(mLastPoint.pos, event->position());
-                update(QRect(mLastPoint.pos.toPoint(), event->position().toPoint()).normalized()
-                       .adjusted(-maxPenRadius, -maxPenRadius, maxPenRadius, maxPenRadius));
-            }
-            break;
-    }
-}
-
-void TabletCanvas::paintPixmap(QPainter &painter, QMouseEvent *event)
-{
-
     qreal maxPenRadius = pressureToWidth(1.0); // do we need this???
     painter.setPen(m_pen);
-    painter.drawLine(mLastPoint.pos, event->position());
-    update(QRect(mLastPoint.pos.toPoint(), event->position().toPoint()).normalized()
+    painter.drawLine(mLastPoint.pos, mCurrentPoint.pos);
+    update(QRect(mLastPoint.pos.toPoint(), mCurrentPoint.pos.toPoint()).normalized()
            .adjusted(-maxPenRadius, -maxPenRadius, maxPenRadius, maxPenRadius));
-    // painter.setPen(QPen(Qt::black, 5));  // Adjust the pen width/color as needed
-    // painter.drawLine(mLastPoint.pos, event->position());
 }
-//! [5]
 
 qreal TabletCanvas::pressureToWidth(qreal pressure)
 {
@@ -212,67 +152,33 @@ qreal TabletCanvas::pressureToWidth(qreal pressure)
 //! [7]
 void TabletCanvas::updateBrush(const QTabletEvent *event)
 {
-    int hue, saturation, value, alpha;
-    m_color.getHsv(&hue, &saturation, &value, &alpha);
+    const auto& capabilities = event->pointingDevice()->capabilities();
+    // int vValue = int(((event->yTilt() + 60.0) / 120.0) * 255);
+    // int hValue = int(((event->xTilt() + 60.0) / 120.0) * 255);
+    int hue = 0;
+    int saturation = 0;
+    int value = 0;
+    int alpha = 255;
+    m_color.setHsv(hue, saturation, value, alpha);
 
-    int vValue = int(((event->yTilt() + 60.0) / 120.0) * 255);
-    int hValue = int(((event->xTilt() + 60.0) / 120.0) * 255);
-//! [7] //! [8]
-
-    switch (m_alphaChannelValuator) {
-        case PressureValuator:
-            m_color.setAlphaF(event->pressure());
-            break;
-        case TangentialPressureValuator:
-            if (event->deviceType() == QInputDevice::DeviceType::Airbrush)
-                m_color.setAlphaF(qMax(0.01, (event->tangentialPressure() + 1.0) / 2.0));
-            else
-                m_color.setAlpha(255);
-            break;
-        case TiltValuator:
-            m_color.setAlpha(std::max(std::abs(vValue - 127),
-                                      std::abs(hValue - 127)));
-            break;
-        default:
-            m_color.setAlpha(255);
+    if (capabilities.testFlag(QPointingDevice::Capability::Rotation)) {
+        mCurrentPoint.rotation = event->rotation();
+    }
+    else {
+        mCurrentPoint.rotation = 0;
     }
 
-//! [8] //! [9]
-    switch (m_colorSaturationValuator) {
-        case VTiltValuator:
-            m_color.setHsv(hue, vValue, value, alpha);
-            break;
-        case HTiltValuator:
-            m_color.setHsv(hue, hValue, value, alpha);
-            break;
-        case PressureValuator:
-            m_color.setHsv(hue, int(event->pressure() * 255.0), value, alpha);
-            break;
-        default:
-            ;
+    if (capabilities.testFlag(QPointingDevice::Capability::Pressure)) {
+        m_pen.setWidthF(pressureToWidth(event->pressure()));
+    }
+    else {
+        m_pen.setWidthF(pressureToWidth(1));
     }
 
-    switch (m_lineWidthValuator) {
-        case PressureValuator:
-            m_pen.setWidthF(pressureToWidth(event->pressure()));
-            break;
-        case TiltValuator:
-            m_pen.setWidthF(std::max(std::abs(vValue - 127),
-                                     std::abs(hValue - 127)) / 12);
-            break;
-        default:
-            m_pen.setWidthF(penSize);
+    m_brush.setColor(m_color);
+    m_brush.setColor(m_color);
+    m_pen.setColor(m_color);
     }
-
-    if (event->pointerType() == QPointingDevice::PointerType::Eraser) {
-        m_brush.setColor(Qt::white);
-        m_pen.setColor(Qt::white);
-        m_pen.setWidthF(event->pressure() * 10 + penSize);
-    } else {
-        m_brush.setColor(m_color);
-        m_pen.setColor(m_color);
-    }
-}
 
 void TabletCanvas::updateBrush(const QMouseEvent *event)
 {
