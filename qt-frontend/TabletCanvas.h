@@ -60,8 +60,7 @@ protected:
 
 private:
     qreal pressureToWidth(qreal pressure);
-    void paintPixmap(QPainter &painter, QTabletEvent *event);
-    void paintPixmap(QPainter &painter, QMouseEvent *event);
+    void paintPixmap(QPainter &painter);
     void updateBrush(const QTabletEvent *event);
     void updateBrush(const QMouseEvent *event);
     //void updateCursor(const QTabletEvent *event);
@@ -80,7 +79,7 @@ private:
         QPointF pos;
         qreal pressure = 0;
         qreal rotation = 0;
-    } mLastPoint;
+    } mLastPoint, mCurrentPoint;
 
 signals:
     // Declare a signal that can be emitted when needed
