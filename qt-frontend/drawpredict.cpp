@@ -22,7 +22,14 @@ inline void workerThread(
     float mlpOutput[10];
     float mlpInput[28*28];
     QImage mImage;
-    void* mlpHandle = cppmlp_init("../assets.ignored");
+    CppMlpHndl mlpHndl;
+    qDebug() << "qDebug: before cppmlp_init";
+    CppMlpErrorCode err = cppmlp_init(&mlpHndl, "../assets.ignored");
+    if(err != CPPMLP_GOOD) {
+        throw std::runtime_error("cppmlp_init");
+    }
+    qDebug() << "err: " << err;
+    qDebug() << "qDebug: after cppmlp_init";
 
     while (!terminate.load()) {
         // prepare data:
@@ -37,23 +44,30 @@ inline void workerThread(
         //zzz drawing on the pixmap does not seem to change the return value zzz
 
         // predict:
-        cppmlp_predict(mlpHandle, mlpInput, mlpOutput);
-        for (int i = 0; i < 10; ++i) {
-            std::cout << mlpOutput[i] << " ";
+        CppMlpErrorCode errPredict = cppmlp_predict(mlpHndl, mlpInput, mlpOutput);
+        if(errPredict != CPPMLP_GOOD) {
+            throw std::runtime_error("cppmlp_predict");
         }
-        std::cout << std::endl;
+
+        QString debugOutput = "";
+        for (int i = 0; i < 10; ++i) {
+            debugOutput += QString::number(mlpOutput[i]) + " ";
+        }
+        qDebug() << debugOutput;
 
         // (consider a condition variable)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     // Release
-    cppmlp_destroy(mlpHandle);
+    cppmlp_destroy(mlpHndl);
 }
 
 DrawPredict::DrawPredict(QWidget *parent)
     : QWidget{parent}
 {
+
+    qDebug() << "DrawPredict";
     TabletCanvas* canvas = new TabletCanvas();
     mPixmapPtr = canvas->initPixmap();
     std::cout << mPixmapPtr<< "\n";
