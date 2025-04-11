@@ -56,6 +56,10 @@ DrawPredict::DrawPredict(QWidget *parent)
 {
     TabletCanvas* canvas = new TabletCanvas();
     mPixmapPtr = canvas->initPixmap();
+    std::cout << mPixmapPtr<< "\n";
+    std::cout << mPixmapPtr.get() << "\n";
+    std::cout << mPixmapPtr.use_count() << "\n";
+    std::flush(std::cout);
     mWorker = std::thread(workerThread, mPixmapPtr, std::ref(mTerminate));
 
     QVBoxLayout *layout= new QVBoxLayout;
