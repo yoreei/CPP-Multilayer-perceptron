@@ -15,6 +15,7 @@ TabletCanvas::TabletCanvas()
     : QWidget(nullptr), m_brush(m_color)
     , m_pen(m_brush, 1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin)
 {
+    setMouseTracking(true);
     resize(500, 500);
     setAttribute(Qt::WA_TabletTracking); // see docs for `tabletTracking`
 
@@ -86,32 +87,25 @@ void TabletCanvas::tabletEvent(QTabletEvent *event)
     event->accept();
 }
 
-void TabletCanvas::mousePressEvent(QMouseEvent *event)
-{
-}
-
 void TabletCanvas::mouseMoveEvent(QMouseEvent *event)
 {
+    mCurrentPoint.pos = event->position();
+    mCurrentPoint.pressure = 1;
+    mCurrentPoint.rotation = 0;
+
     if (event->buttons() & Qt::LeftButton) {
         updateBrush(event);
-        mCurrentPoint.pos = event->position();
-        mCurrentPoint.pressure = 1;
-        mCurrentPoint.rotation = 0;
 
         QPainter painter(mPixmapPtr.get());
         paintPixmap(painter);
-
-        mLastPoint.pos      = mCurrentPoint.pos;
-        mLastPoint.pressure = 1;
-        mLastPoint.rotation = 0;
-
-        update();
-        event->accept();
     }
-}
 
-void TabletCanvas::mouseReleaseEvent(QMouseEvent *event)
-{
+    mLastPoint.pos      = mCurrentPoint.pos;
+    mLastPoint.pressure = 1;
+    mLastPoint.rotation = 0;
+
+    update();
+    event->accept();
 }
 
 std::shared_ptr<QPixmap> TabletCanvas::initPixmap()
@@ -131,8 +125,7 @@ void TabletCanvas::paintEvent(QPaintEvent *event)
                                 event->rect().size() * devicePixelRatio());
     painter.drawPixmap(event->rect().topLeft(), *mPixmapPtr, pixmapPortion);
 }
-//! [4]
-//! [5]
+
 void TabletCanvas::paintPixmap(QPainter &painter)
 {
     painter.setRenderHint(QPainter::Antialiasing);
@@ -149,7 +142,6 @@ qreal TabletCanvas::pressureToWidth(qreal pressure)
     return pressure * pressureSens + penSize;
 }
 
-//! [7]
 void TabletCanvas::updateBrush(const QTabletEvent *event)
 {
     const auto& capabilities = event->pointingDevice()->capabilities();
@@ -186,7 +178,7 @@ void TabletCanvas::updateBrush(const QMouseEvent *event)
 
     // m_brush.setColor(Qt::black);
     // m_pen.setColor(Qt::black);
-    // m_pen.setWidthF( penSize);
+    m_pen.setWidthF(penSize);
 }
 
 

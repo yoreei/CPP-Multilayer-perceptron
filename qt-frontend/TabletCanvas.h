@@ -50,9 +50,10 @@ protected:
     void tabletEvent(QTabletEvent *event) override;
 
     // For mouse input
-    void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
+    // We might need these in the future but for now we don't:
+    //void mousePressEvent(QMouseEvent *event) override;
+    //void mouseReleaseEvent(QMouseEvent *event) override;
 
     // For redrawing the widget
     void paintEvent(QPaintEvent *event) override;
