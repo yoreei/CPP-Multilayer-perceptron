@@ -5,7 +5,7 @@
 
 #include "Tab.h"
 #include "BrowseBad.h"
-#include "drawpredict.h"
+#include "DrawPredict.h"
 
 //! [0]
 Tab::Tab(QWidget *parent)

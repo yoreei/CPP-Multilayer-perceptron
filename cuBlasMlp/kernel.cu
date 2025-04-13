@@ -31,6 +31,7 @@
 #include "common/simdUtil.h"
 #include "common/cublasUtil.h"
 
+#define BUILDING_CUMLP_EXPORTS
 #include "cublas_mlp_api.h"
 
 // define to compare my implementation with an eigen implementation (known to work) (slow)
@@ -662,20 +663,19 @@ CPUMatrix<T> readIdxXubyte(const std::string& dataFile) {
     std::cout << "loading " << dataFile << std::endl;
     std::ifstream dataIfstream(dataFile, std::ios::binary);
     if (!dataIfstream) {
-        std::cerr << "Unable to open file: " << dataFile << std::endl;
-        exit(-1);
+        c_logger("Unable to open file: %s\n", dataFile.c_str());
+        throw std::runtime_error("wrong file");
     }
 
     // Read header: magic number, number of images, rows, and columns.
     uint32_t magicNumber = 0;
     dataIfstream.read(reinterpret_cast<char*>(&magicNumber), sizeof(magicNumber));
     magicNumber = swapEndian(magicNumber);
-    std::cout << "Magic Number: " << magicNumber << "\n";
 
     uint32_t numImages;
     dataIfstream.read(reinterpret_cast<char*>(&numImages), sizeof(uint32_t));
     numImages = swapEndian(numImages);
-    std::cout << "Number of Images: " << numImages << "\n";
+    c_logger("Number of Images: %i\n", numImages);
 
     size_t colSize = [&]() {
         // 08 bits, 01 dimensions
@@ -695,6 +695,7 @@ CPUMatrix<T> readIdxXubyte(const std::string& dataFile) {
             return size_t(imgRow * imgCol);
         }
         else {
+			c_logger("wrong magic: %s\n", dataFile.c_str());
             throw std::runtime_error("wrong magic");
         }
     }();
@@ -705,6 +706,7 @@ CPUMatrix<T> readIdxXubyte(const std::string& dataFile) {
         uint8_t byte;
         dataIfstream.read(reinterpret_cast<char*>(&byte), sizeof(byte));
         if (!dataIfstream) {
+			c_logger("error reading pos: %s\n", dataFile.c_str());
             throw std::runtime_error("error reading pos " + std::to_string(std::distance(mat.data, i)));
         }
 
@@ -1320,27 +1322,39 @@ void testRun() {
 **** C API DEFINITIONS
 *************************************/
 
-void* cppmlp_init(const char* directory) {
-	CPUMatrix<float> x = readIdxXubyte<float>(std::string(directory) + "/train-images.idx3-ubyte");
-	GPUMatrix<float> xGpu = GPUMatrix<float>(x);
-	CPUMatrix<int> y = readIdxXubyte<int>(std::string(directory) + "/train-labels.idx1-ubyte");
-	GPUMatrix<int> yGpu = GPUMatrix<int>(y);
-	constexpr size_t hiddenSize = 128;
+CppMlpErrorCode cppmlp_init(CppMlpHndl* hndl, const char* directory) {
+    try {
+		CPUMatrix<float> x = readIdxXubyte<float>(std::string(directory) + "/train-images.idx3-ubyte");
+		CPUMatrix<int> y = readIdxXubyte<int>(std::string(directory) + "/train-labels.idx1-ubyte");
+		GPUMatrix<float> xGpu = GPUMatrix<float>(x);
+		GPUMatrix<int> yGpu = GPUMatrix<int>(y);
+		constexpr size_t hiddenSize = 128;
 
-	BenchId trainBench = cppBench("Train MLP");
-	void* mlpAsToken = new MLP{ xGpu, yGpu, hiddenSize, BATCH_SIZE, LR, EPOCHS };
-	cppBenchEnd(trainBench);
-
-	return mlpAsToken;
+		BenchId trainBench = cppBench("Train MLP");
+		void* mlpAsToken = new MLP{ xGpu, yGpu, hiddenSize, BATCH_SIZE, LR, EPOCHS };
+		cppBenchEnd(trainBench);
+        *hndl = mlpAsToken;
+		return CPPMLP_GOOD;
+    }
+    catch (const std::runtime_error& e){
+        return CPPMLP_UNKNOWN_ERROR;
+    }
 }
 
-void cppmlp_destroy(void* hndl) {
+void cppmlp_destroy(CppMlpHndl hndl) {
 	delete reinterpret_cast<MLP*>(hndl);
 }
 
 /// output size is 10; sample size is one image
-void cppmlp_predict(void* hndl, const float* sample, float* output) {
-	reinterpret_cast<MLP*>(hndl)->predict(sample, output);
+CppMlpErrorCode cppmlp_predict(CppMlpHndl hndl, const float* sample, float* output) {
+    try {
+		reinterpret_cast<MLP*>(hndl)->predict(sample, output);
+        return CPPMLP_GOOD;
+    }
+    catch (const std::runtime_error& e){
+        c_logger("cppmlp_predict error\n");
+        return CPPMLP_UNKNOWN_ERROR;
+    }
 }
 
 #ifndef BUILD_DLL
@@ -1348,7 +1362,8 @@ int main() {
     enableFpExcept();
     testRun();
 
-    void* hndl = cppmlp_init("assets.ignored");
+    CppMlpHndl hndl;
+    CppMlpErrorCode err = cppmlp_init(&hndl, "assets.ignored");
 
     BenchId testBench = cppBench("Iterate Test Images");
     CPUMatrix<float> testX = readIdxXubyte<float>("assets.ignored/t10k-images.idx3-ubyte");
@@ -1357,7 +1372,7 @@ int main() {
 	CPUMatrix<int> testY = readIdxXubyte<int>("assets.ignored/t10k-labels.idx1-ubyte");
     for (size_t i = 0; i < testX.rows; ++i) {
         const float* imagePtr = testX.data + testX.getIdx(i, 0);
-		cppmlp_predict(hndl, imagePtr, output);
+		CppMlpErrorCode errPredict = cppmlp_predict(hndl, imagePtr, output);
 
         // check accuracy
 		const auto maxIter = std::max_element(output, output + std::size(output));

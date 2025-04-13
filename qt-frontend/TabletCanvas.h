@@ -29,7 +29,7 @@ public:
                     TiltValuator, VTiltValuator, HTiltValuator, NoValuator };
     Q_ENUM(Valuator)
 
-    TabletCanvas();
+    TabletCanvas(QPixmap* pixmapPtrRef);
 
     bool saveImage();
     //bool loadImage(const QString &file);
@@ -44,7 +44,7 @@ public:
         { if (c.isValid()) m_color = c; }
     QColor color() const
         { return m_color; }
-    std::shared_ptr<QPixmap> initPixmap();
+    void initPixmap();
 protected:
     // For table input
     void tabletEvent(QTabletEvent *event) override;
@@ -74,7 +74,7 @@ private:
     QPen m_pen;
     float penSize = 12;
     bool mDrawing = false;
-    std::shared_ptr<QPixmap> mPixmapPtr = nullptr;
+    QPixmap* mPixmapPtr;
 
     struct Point {
         QPointF pos;

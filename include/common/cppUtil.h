@@ -218,3 +218,24 @@ inline bool nextPermute(std::vector<int>& in, std::vector<int>& out) {
     return std::next_permutation(in.begin(), in.end());
 }
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <stdio.h>
+#include <stdarg.h>
+
+void c_logger(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    
+    vfprintf(stdout, format, args);
+    fflush(stdout);  // Force a flush after printing
+
+    va_end(args);
+}
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
+
