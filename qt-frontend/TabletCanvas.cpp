@@ -11,9 +11,10 @@
 #include <cstdlib>
 
 //! [0]
-TabletCanvas::TabletCanvas()
+TabletCanvas::TabletCanvas(QPixmap* pixmapPtr)
     : QWidget(nullptr), m_brush(m_color)
     , m_pen(m_brush, 1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin)
+    , mPixmapPtr(pixmapPtr)
 {
     setMouseTracking(true);
     resize(500, 500);
@@ -21,6 +22,8 @@ TabletCanvas::TabletCanvas()
 
     QShortcut* shortcut = new QShortcut(QKeySequence("Ctrl+S"), this);
     connect(shortcut, &QShortcut::activated, this, &TabletCanvas::saveImage);
+
+    initPixmap();
 
 }
 //! [0]
@@ -65,7 +68,7 @@ void TabletCanvas::tabletEvent(QTabletEvent *event)
         //updateCursor(event);
 //#endif
         if (mDrawing) {
-            QPainter painter(mPixmapPtr.get());
+            QPainter painter(mPixmapPtr);
             paintPixmap(painter);
             // emit bitmapUpdated(mPixmapPtr.get()); // possible optimization:
             // right now, worker thread crunches constantly, we could give it a rest with signals
@@ -96,7 +99,7 @@ void TabletCanvas::mouseMoveEvent(QMouseEvent *event)
     if (event->buttons() & Qt::LeftButton) {
         updateBrush(event);
 
-        QPainter painter(mPixmapPtr.get());
+        QPainter painter(mPixmapPtr);
         paintPixmap(painter);
     }
 
@@ -108,13 +111,12 @@ void TabletCanvas::mouseMoveEvent(QMouseEvent *event)
     event->accept();
 }
 
-std::shared_ptr<QPixmap> TabletCanvas::initPixmap()
+void TabletCanvas::initPixmap()
 {
     qreal dpr = devicePixelRatio();
-    mPixmapPtr = std::make_shared<QPixmap>(qRound(width() * dpr), qRound(height() * dpr));
+    *mPixmapPtr = QPixmap(qRound(width() * dpr), qRound(height() * dpr));
     mPixmapPtr->setDevicePixelRatio(dpr);
     mPixmapPtr->fill(Qt::white);
-    return mPixmapPtr;
 }
 
 void TabletCanvas::paintEvent(QPaintEvent *event)
@@ -124,6 +126,13 @@ void TabletCanvas::paintEvent(QPaintEvent *event)
     QRect pixmapPortion = QRect(event->rect().topLeft() * devicePixelRatio(),
                                 event->rect().size() * devicePixelRatio());
     painter.drawPixmap(event->rect().topLeft(), *mPixmapPtr, pixmapPortion);
+
+
+    qDebug() << "PaintEvent: mPixmapPtr: " << mPixmapPtr;
+    QImage mImage = mPixmapPtr->scaled(28, 28).toImage().convertToFormat(QImage::Format_Grayscale8);
+    mImage.invertPixels();
+    const uchar* pixelPtr = mImage.bits();
+    // qDebug() << "PaintEvent: " << QString::number(*pixelPtr);
 }
 
 void TabletCanvas::paintPixmap(QPainter &painter)

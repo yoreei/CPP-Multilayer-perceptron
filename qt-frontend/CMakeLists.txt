@@ -21,10 +21,12 @@ set(PROJECT_SOURCES
         BrowseBad.h
         Tab.cpp
         Tab.h
-        drawpredict.cpp
-        drawpredict.h
+        DrawPredict.cpp
+        DrawPredict.h
         TabletCanvas.cpp
         TabletCanvas.h
+        MlpWorker.h
+        MlpWorker.cpp
 )
 
 set(EXTERNAL_HEADERS
