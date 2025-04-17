@@ -18,6 +18,10 @@ extern "C" {
 	#define CPPMLP_WRONG_SAMPLE     3  // Wrong sample
 	#define CPPMLP_CUDA_ERROR       4  // CUDA error
 
+	CUMLP_API int cppmlp_read_mnist_meta(const char* filename);
+
+	CUMLP_API float* cppmlp_read_mnist(const char* filename);
+
 	typedef void* CppMlpHndl;
 
     /// init & train

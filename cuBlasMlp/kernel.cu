@@ -658,47 +658,6 @@ __global__ void cuPositiveMask(PODMatrix<float> mat, const PODMatrix<float> mask
 
 template <typename T>
 CPUMatrix<T> readIdxXubyte(const std::string& dataFile) {
-    // T == float: we are reading data
-    // T == int: we are reading labels
-    std::cout << "loading " << dataFile << std::endl;
-    std::ifstream dataIfstream(dataFile, std::ios::binary);
-    if (!dataIfstream) {
-        c_logger("Unable to open file: %s\n", dataFile.c_str());
-        throw std::runtime_error("wrong file");
-    }
-
-    // Read header: magic number, number of images, rows, and columns.
-    uint32_t magicNumber = 0;
-    dataIfstream.read(reinterpret_cast<char*>(&magicNumber), sizeof(magicNumber));
-    magicNumber = swapEndian(magicNumber);
-
-    uint32_t numImages;
-    dataIfstream.read(reinterpret_cast<char*>(&numImages), sizeof(uint32_t));
-    numImages = swapEndian(numImages);
-    c_logger("Number of Images: %i\n", numImages);
-
-    size_t colSize = [&]() {
-        // 08 bits, 01 dimensions
-        if (magicNumber == 	0x00000801) {
-            return size_t(1);
-        }
-        // 08 bits, 03 dimensions
-        else if (magicNumber == 0x00000803) {
-            uint32_t imgRow;
-            dataIfstream.read(reinterpret_cast<char*>(&imgRow), sizeof(uint32_t));
-            imgRow = swapEndian(imgRow);
-
-            uint32_t imgCol;
-            dataIfstream.read(reinterpret_cast<char*>(&imgCol), sizeof(uint32_t));
-            imgCol = swapEndian(imgCol);
-
-            return size_t(imgRow * imgCol);
-        }
-        else {
-			c_logger("wrong magic: %s\n", dataFile.c_str());
-            throw std::runtime_error("wrong magic");
-        }
-    }();
 
     // Read data:
     CPUMatrix<T> mat(numImages, colSize);
@@ -1321,6 +1280,62 @@ void testRun() {
 /************************************
 **** C API DEFINITIONS
 *************************************/
+
+zzz // continue C-ifying this
+int cppmlp_read_mnist_meta(const char* filename) {
+    // T == float: we are reading data
+    // T == int: we are reading labels
+    std::cout << "loading " << filename << std::endl;
+    std::ifstream dataIfstream(filename, std::ios::binary);
+    if (!dataIfstream) {
+        c_logger("Unable to open file: %s\n", filename);
+        return -1;
+    }
+
+    // Read header: magic number, number of images, rows, and columns.
+    uint32_t magicNumber = 0;
+    dataIfstream.read(reinterpret_cast<char*>(&magicNumber), sizeof(magicNumber));
+    magicNumber = swapEndian(magicNumber);
+
+    uint32_t numImages;
+    dataIfstream.read(reinterpret_cast<char*>(&numImages), sizeof(uint32_t));
+    numImages = swapEndian(numImages);
+    c_logger("Number of Images: %i\n", numImages);
+
+    std::optional<size_t> colSize = [&]() -> std::optional<size_t> {
+        // 08 bits, 01 dimensions
+        if (magicNumber == 	0x00000801) {
+            return std::optional<size_t>(1);
+        }
+        // 08 bits, 03 dimensions
+        else if (magicNumber == 0x00000803) {
+            uint32_t imgRow;
+            dataIfstream.read(reinterpret_cast<char*>(&imgRow), sizeof(uint32_t));
+            imgRow = swapEndian(imgRow);
+
+            uint32_t imgCol;
+            dataIfstream.read(reinterpret_cast<char*>(&imgCol), sizeof(uint32_t));
+            imgCol = swapEndian(imgCol);
+
+            return std::optional<size_t>(imgRow * imgCol);
+        }
+        else {
+			c_logger("wrong magic: %s\n", filename);
+            return std::nullopt;
+        }
+    }();
+    if (colSize) {
+        return numImages * colSize.value();
+    }
+    else {
+        return -1;
+    }
+
+}
+
+float* cppmlp_read_mnist(const char* filename) {
+
+}
 
 CppMlpErrorCode cppmlp_init(CppMlpHndl* hndl, const char* directory) {
     try {
