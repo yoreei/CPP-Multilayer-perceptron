@@ -1,15 +1,13 @@
 #include "DrawPredict.h"
+#include "MlpWorker.h"
 #include "TabletCanvas.h"
 #include <QLabel>
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <qpainter.h>
 #include <QDebug>
-#include "cublas_mlp_api.h"
 
-#include <iostream>
-#include <thread>
-#include <chrono>
+#include <QThread>
 #include <atomic>
 #include <span>
 
@@ -24,9 +22,20 @@ DrawPredict::DrawPredict(QWidget *parent)
 {
 
     qDebug() << "DrawPredict";
-    mPixmap = std::make_unique<QPixmap>();
-    TabletCanvas* canvas = new TabletCanvas(mPixmap.get());
-    mWorker = std::thread(workerThread, mPixmap.get(), std::ref(mTerminate));
+    pixmap = std::make_unique<QPixmap>();
+    TabletCanvas* canvas = new TabletCanvas(pixmap.get());
+    canvas->setFixedSize(500, 500);
+
+    mlpThread = new QThread(this);
+    mlpWorker = std::make_unique<MlpWorker>(pixmap.get());
+    mlpWorker->moveToThread(mlpThread); // makes the event loop of this obj run on mlpThread
+    QObject::connect(mlpThread, &QThread::started, mlpWorker.get(), &MlpWorker::doWork);
+    QObject::connect(mlpWorker.get(), &MlpWorker::dataUpdated, this,
+                     [this](std::array<float,10> arr){
+        this->updateLabels(arr);
+    });
+
+    mlpThread->start();
 
     QVBoxLayout *layout= new QVBoxLayout;
     layout->addWidget(canvas, 1);
@@ -46,9 +55,9 @@ DrawPredict::DrawPredict(QWidget *parent)
         tableLayout->addWidget(headerLabel, 0, col);
 
         // Body label with a placeholder float value.
-        QLabel* bodyLabel = new QLabel(".00", tableWidget); // this label should reflect the value of mMlpOutput[col]
-        bodyLabel->setAlignment(Qt::AlignCenter);
-        tableLayout->addWidget(bodyLabel, 1, col);
+        outputLabels[col] = new QLabel(".00", tableWidget);
+        outputLabels[col]->setAlignment(Qt::AlignCenter);
+        tableLayout->addWidget(outputLabels[col], 1, col);
     }
     tableWidget->setLayout(tableLayout);
 
@@ -75,24 +84,17 @@ DrawPredict::DrawPredict(QWidget *parent)
 
 DrawPredict::~DrawPredict()
 {
-    mTerminate.store(true);
-    // Wait for the worker thread to finish.
-    mWorker.join();
+    mlpThread->requestInterruption();
+    mlpThread->quit();
+    mlpThread->wait();
+    // mlpThread will destruct mlpWorker using signals
 }
 
- void DrawPredict::paintEvent(QPaintEvent *)
+void DrawPredict::updateLabels(std::array<float, 10> output)
 {
-    QPainter painter(this);
-    drawGrid(&painter);
-}
-
-
-void DrawPredict::drawGrid(QPainter *painter)
-{
-    QString debugOutput = "";
-    for (int i = 0; i < 10; ++i) {
-        debugOutput += QString::number(output[i]) + " ";
+    for(int i = 0; i < 10; ++i) {
+        assert(outputLabels[i]);
+        outputLabels[i]->setText(QString::number(output[i], 'f', 2));
     }
-    qDebug() << "mlpOutput: " << debugOutput;
-
+    update();
 }

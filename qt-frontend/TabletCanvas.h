@@ -72,7 +72,7 @@ private:
     QColor m_color = Qt::black;
     QBrush m_brush;
     QPen m_pen;
-    float penSize = 12;
+    float penSize = 30;
     bool mDrawing = false;
     QPixmap* mPixmapPtr;
 

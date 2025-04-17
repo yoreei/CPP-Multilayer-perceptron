@@ -1,9 +1,11 @@
 #ifndef DRAWPREDICT_H
 #define DRAWPREDICT_H
 
-#include <thread>
 #include <QWidget>
 #include <QLabel>
+#include <QThread>
+
+class MlpWorker;
 
 class DrawPredict : public QWidget
 {
@@ -13,15 +15,13 @@ public:
     ~DrawPredict() override;
 
 private:
-    void drawGrid(QPainter *painter);
-    virtual void paintEvent(QPaintEvent *) override;
+    void updateLabels(std::array<float, 10> output);
 
-    std::array<QLabel*, 10> mOutputLabels;
+    std::array<QLabel*, 10> outputLabels{};
     // worker thread stuff
-    std::array<float, 10> mMlpOutput;
-    std::thread mWorker;
-    std::unique_ptr<QPixmap> mPixmap = nullptr;
-    std::atomic<bool> mTerminate{false};  // workerThread exit signal
+    QThread* mlpThread = nullptr;
+    std::unique_ptr<MlpWorker> mlpWorker = nullptr;
+    std::unique_ptr<QPixmap> pixmap = nullptr;
 };
 
 #endif // DRAWPREDICT_H

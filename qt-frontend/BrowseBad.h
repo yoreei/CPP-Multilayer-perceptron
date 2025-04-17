@@ -24,6 +24,4 @@ protected:
 
     int m_step = 0;
     int numBad = 0;
-    QPushButton* prev = new QPushButton{"<"};
-    QPushButton* next = new QPushButton{">"};
 };
