@@ -263,7 +263,6 @@
     <CudaCompile Include="kernel.cu" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\include\common\cppUtil.h" />
     <ClInclude Include="..\include\common\cublasUtil.h" />
     <ClInclude Include="..\include\common\cuUtil.h" />
     <ClInclude Include="..\include\common\simdUtil.h" />

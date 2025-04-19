@@ -12,15 +12,26 @@ extern "C" {
 
 	// Error code definitions.
 	typedef int CppMlpErrorCode;
-	#define CPPMLP_GOOD             0  // Good
-	#define CPPMLP_UNKNOWN_ERROR    1  // Unknown error
-	#define CPPMLP_WRONG_DIRECTORY  2  // Wrong directory
-	#define CPPMLP_WRONG_SAMPLE     3  // Wrong sample
-	#define CPPMLP_CUDA_ERROR       4  // CUDA error
+	#define CPPMLP_GOOD             0
+	#define CPPMLP_UNKNOWN_ERROR    1  
+	#define CPPMLP_CANNOT_OPEN_FILE 2
+	#define CPPMLP_BAD_READ			3
+	#define CPPMLP_WRONG_SAMPLE     4 
+	#define CPPMLP_CUDA_ERROR       5
+	#define CPPMLP_WRONG_ARGUMENT   6
 
-	CUMLP_API int cppmlp_read_mnist_meta(const char* filename);
+	struct CppMlpReadDims {
+		int numImages = 0;
+		int imageRows = 0; // rows per 1 image
+		int imageCols = 0; // cols per 1 image
+	};
 
-	CUMLP_API float* cppmlp_read_mnist(const char* filename);
+	CUMLP_API CppMlpErrorCode cppmlp_read_mnist_meta(const char* filename, CppMlpReadDims* dims);
+
+	#define CPPMLP_READTYPE_INT 1
+	#define CPPMLP_READTYPE_FLOAT 2
+
+	CUMLP_API CppMlpErrorCode cppmlp_read_mnist(const char* filename, void* outputPtr, const int cppmlp_readtype);
 
 	typedef void* CppMlpHndl;
 
