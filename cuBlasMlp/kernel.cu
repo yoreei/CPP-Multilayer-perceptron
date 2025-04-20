@@ -1327,7 +1327,20 @@ CppMlpErrorCode cppmlp_read_mnist(const char* filename, void* outputPtr, const i
 		return CPPMLP_CANNOT_OPEN_FILE;
 	}
 
-	dataIfstream.seekg(8, std::ios::beg); // important: skip header data
+	int skipHeaderBytes;
+	if (cppmlp_readtype == CPPMLP_READTYPE_LABELS) {
+		skipHeaderBytes = 8;
+	}
+	else if (cppmlp_readtype == CPPMLP_READTYPE_IMAGES) {
+		skipHeaderBytes = 16;
+	}
+	else {
+		c_logger("wrong read type parameter\n");
+		assert(false);
+		return CPPMLP_WRONG_ARGUMENT;
+	}
+
+	dataIfstream.seekg(skipHeaderBytes, std::ios::beg); // important: skip header data
 	int totalBytes = dims.imageCols * dims.imageRows * dims.numImages;
 	for (int i = 0; i < totalBytes; ++i) {
 		uint8_t byte;
@@ -1338,20 +1351,15 @@ CppMlpErrorCode cppmlp_read_mnist(const char* filename, void* outputPtr, const i
 			return CPPMLP_BAD_READ;
 		}
 
-		if (cppmlp_readtype == CPPMLP_READTYPE_INT) {
+		if (cppmlp_readtype == CPPMLP_READTYPE_LABELS) {
 			assert(byte <= 9);
 			int* floatOutput = reinterpret_cast<int*>(outputPtr);
 			floatOutput[i] = byte;
 		}
-		else if (cppmlp_readtype == CPPMLP_READTYPE_FLOAT) {
+		else if (cppmlp_readtype == CPPMLP_READTYPE_IMAGES) {
 			float* byteOutput = reinterpret_cast<float*>(outputPtr);
 			byteOutput[i] = float(byte);
 			byteOutput[i] /= 255.f;
-		}
-		else {
-			c_logger("wrong read type parameter\n");
-			assert(false);
-			return CPPMLP_WRONG_ARGUMENT;
 		}
 	}
 	return CPPMLP_GOOD;
@@ -1370,7 +1378,7 @@ CppMlpErrorCode cppmlp_init(CppMlpHndl* hndl, const char* directory) {
 	err = cppmlp_read_mnist(
 		(std::string(directory) + "/train-images.idx3-ubyte").c_str(),
 		xCpu.data,
-		CPPMLP_READTYPE_FLOAT);
+		CPPMLP_READTYPE_IMAGES);
 	if (err != CPPMLP_GOOD) {
 		assert(false);
 		return err;
@@ -1387,7 +1395,7 @@ CppMlpErrorCode cppmlp_init(CppMlpHndl* hndl, const char* directory) {
 	err = cppmlp_read_mnist(
 		(std::string(directory) + "/train-labels.idx1-ubyte").c_str(),
 		yCpu.data,
-		CPPMLP_READTYPE_INT);
+		CPPMLP_READTYPE_LABELS);
 	if (err != CPPMLP_GOOD) {
 		assert(false);
 		return err;
@@ -1443,11 +1451,11 @@ int main() {
 	CppMlpReadDims dims;
 	cppmlp_read_mnist_meta("assets.ignored/t10k-images.idx3-ubyte", &dims);
 	CPUMatrix<float> testX{ dims.numImages, dims.imageCols * dims.imageRows };
-	cppmlp_read_mnist("assets.ignored/t10k-images.idx3-ubyte", testX.data, CPPMLP_READTYPE_FLOAT);
+	cppmlp_read_mnist("assets.ignored/t10k-images.idx3-ubyte", testX.data, CPPMLP_READTYPE_IMAGES);
 
 	cppmlp_read_mnist_meta("assets.ignored/t10k-labels.idx1-ubyte", &dims);
 	CPUMatrix<int> testY{ dims.numImages, dims.imageCols * dims.imageRows };
-	cppmlp_read_mnist("assets.ignored/t10k-labels.idx1-ubyte", testY.data, CPPMLP_READTYPE_INT);
+	cppmlp_read_mnist("assets.ignored/t10k-labels.idx1-ubyte", testY.data, CPPMLP_READTYPE_LABELS);
 
 	int numCorrect = 0;
 	for (size_t i = 0; i < testX.rows; ++i) {

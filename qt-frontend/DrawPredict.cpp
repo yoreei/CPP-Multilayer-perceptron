@@ -6,10 +6,7 @@
 #include <QVBoxLayout>
 #include <qpainter.h>
 #include <QDebug>
-
 #include <QThread>
-#include <atomic>
-#include <span>
 
 namespace {
 constexpr auto SCALE = 20;

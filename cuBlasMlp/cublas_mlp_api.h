@@ -26,10 +26,10 @@ extern "C" {
 		int imageCols = 0; // cols per 1 image
 	};
 
-	CUMLP_API CppMlpErrorCode cppmlp_read_mnist_meta(const char* filename, CppMlpReadDims* dims);
+    CUMLP_API CppMlpErrorCode cppmlp_read_mnist_meta(const char* filename, CppMlpReadDims* dims);
 
-	#define CPPMLP_READTYPE_INT 1
-	#define CPPMLP_READTYPE_FLOAT 2
+	#define CPPMLP_READTYPE_LABELS 1
+	#define CPPMLP_READTYPE_IMAGES 2
 
 	CUMLP_API CppMlpErrorCode cppmlp_read_mnist(const char* filename, void* outputPtr, const int cppmlp_readtype);
 

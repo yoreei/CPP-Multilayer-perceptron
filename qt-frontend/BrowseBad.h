@@ -2,6 +2,7 @@
 
 #include <QPushButton>
 #include <QWidget>
+#include "cublas_mlp_api.h"
 
 namespace Ui {
 class Example;
@@ -18,10 +19,11 @@ public:
 protected:
     void paintEvent(QPaintEvent *) override;
     void wheelEvent(QWheelEvent *) override;
-    void nextStep(int delta);
-    //void drawPoint(QPainter *painter, const QPointF &pos, const QColor &color);
     virtual void resizeEvent(QResizeEvent *event) override;
+    void updateImg();
 
-    int m_step = 0;
-    int numBad = 0;
+    CppMlpReadDims dims;
+    int currentImgIdx = 0;
+    QImage img;
+    std::vector<float> filedata;
 };
