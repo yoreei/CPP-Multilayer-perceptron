@@ -5,7 +5,6 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <qpainter.h>
-#include <QDebug>
 #include <QThread>
 
 namespace {
@@ -18,10 +17,9 @@ DrawPredict::DrawPredict(QWidget *parent)
     : QWidget{parent}
 {
 
-    qDebug() << "DrawPredict";
+    //setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
+
     pixmap = std::make_unique<QPixmap>();
-    TabletCanvas* canvas = new TabletCanvas(pixmap.get());
-    canvas->setFixedSize(500, 500);
 
     mlpThread = new QThread(this);
     mlpWorker = std::make_unique<MlpWorker>(pixmap.get());
@@ -34,8 +32,12 @@ DrawPredict::DrawPredict(QWidget *parent)
 
     mlpThread->start();
 
-    QVBoxLayout *layout= new QVBoxLayout;
-    layout->addWidget(canvas, 1);
+    // In your parent widget’s constructor:
+    auto *mainLayout = new QVBoxLayout(this);
+
+    setFixedWidth(28*13);
+    TabletCanvas *canvas = new TabletCanvas(pixmap.get(), this);
+    mainLayout->addWidget(canvas);
 
     QHBoxLayout *bottomLayout = new QHBoxLayout;
 
@@ -64,9 +66,11 @@ DrawPredict::DrawPredict(QWidget *parent)
     // Add a stretch so the table stays on the left.
     bottomLayout->addStretch();
 
-    QPushButton* clearButton = new QPushButton(tr("Clear"));
-    connect(clearButton, &QPushButton::clicked, this, [canvas, this](){canvas->initPixmap(); update();});
-    bottomLayout->addWidget(clearButton);
+    QVBoxLayout* bottomGroup = new QVBoxLayout;
+    bottomGroup->addWidget(tableWidget);
+
+    // now add that group into your bottomLayout, then the stretch:
+    bottomLayout->addLayout(bottomGroup);
 
     // to the left of clearButton, in bottomLayoutWidget
     // header: from 0 to 9 horizontally
@@ -74,9 +78,10 @@ DrawPredict::DrawPredict(QWidget *parent)
 
     QWidget* bottomLayoutWidget = new QWidget(this);
     bottomLayoutWidget->setLayout(bottomLayout);
-    layout->addWidget(bottomLayoutWidget, 0);
+    mainLayout->addWidget(bottomLayoutWidget, 0);
+    mainLayout->addStretch();
 
-    setLayout(layout);
+    setLayout(mainLayout);
 }
 
 DrawPredict::~DrawPredict()

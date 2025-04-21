@@ -11,50 +11,41 @@
 #include <cstdlib>
 
 //! [0]
-TabletCanvas::TabletCanvas(QPixmap* pixmapPtr)
-    : QWidget(nullptr), m_brush(m_color)
+TabletCanvas::TabletCanvas(QPixmap* pixmapPtr, QWidget* parent)
+    : QWidget(parent), m_brush(m_color)
     , m_pen(m_brush, 1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin)
     , mPixmapPtr(pixmapPtr)
 {
+
     setMouseTracking(true);
-    resize(500, 500);
     setAttribute(Qt::WA_TabletTracking); // see docs for `tabletTracking`
 
+    //setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    //setFixedSize(28*13, 28*13);
+
     QShortcut* shortcut = new QShortcut(QKeySequence("Ctrl+S"), this);
+    QShortcut* spaceShortcut = new QShortcut(QKeySequence(Qt::Key_Space), this);
     connect(shortcut, &QShortcut::activated, this, &TabletCanvas::saveImage);
+    connect(spaceShortcut, &QShortcut::activated, this, &TabletCanvas::clear);
 
     initPixmap();
-
 }
-//! [0]
 
-//! [1]
 bool TabletCanvas::saveImage()
 {
     return mPixmapPtr->scaled(28, 28).save("C:\\DATA\\git\\cpp-mlp\\assets.ignored\\tabletOut.png");
 }
 
-// bool TabletCanvas::loadImage(const QString &file)
-// {
-//     bool success = m_pixmap.load(file);
-
-//     if (success) {
-//         update();
-//         return true;
-//     }
-//     return false;
-// }
-
 void TabletCanvas::clear()
 {
-    mPixmapPtr->fill(Qt::white);
+    mPixmapPtr->fill(Qt::black);
     update();
 }
 
 void TabletCanvas::tabletEvent(QTabletEvent *event)
 {
     updateBrush(event);
-    mCurrentPoint.pos = event->position();
+    mCurrentPoint.pos = mapTo28(event->position());
     mCurrentPoint.pressure = event->pressure();
     mCurrentPoint.rotation = event->rotation();
 
@@ -90,9 +81,17 @@ void TabletCanvas::tabletEvent(QTabletEvent *event)
     event->accept();
 }
 
+QPointF TabletCanvas::mapTo28(const QPointF& widgetPos) {
+    auto w = width();
+    auto h = height();
+    assert(width() == height());
+    float ratio = 28.f / width();
+    return widgetPos * ratio;
+}
+
 void TabletCanvas::mouseMoveEvent(QMouseEvent *event)
 {
-    mCurrentPoint.pos = event->position();
+    mCurrentPoint.pos = mapTo28(event->position());
     mCurrentPoint.pressure = 1;
     mCurrentPoint.rotation = 0;
 
@@ -113,26 +112,29 @@ void TabletCanvas::mouseMoveEvent(QMouseEvent *event)
 
 void TabletCanvas::initPixmap()
 {
-    qreal dpr = devicePixelRatio();
-    *mPixmapPtr = QPixmap(qRound(width() * dpr), qRound(height() * dpr));
-    mPixmapPtr->setDevicePixelRatio(dpr);
-    mPixmapPtr->fill(Qt::white);
+    *mPixmapPtr = QPixmap(28, 28);
+    // this is for high-resolution displays and smooth visuals:
+    // qreal dpr = devicePixelRatio();
+    // mPixmapPtr->setDevicePixelRatio(dpr);
+    mPixmapPtr->fill(Qt::black);
 }
 
 void TabletCanvas::paintEvent(QPaintEvent *event)
 {
     assert(mPixmapPtr);
     QPainter painter(this);
-    QRect pixmapPortion = QRect(event->rect().topLeft() * devicePixelRatio(),
-                                event->rect().size() * devicePixelRatio());
-    painter.drawPixmap(event->rect().topLeft(), *mPixmapPtr, pixmapPortion);
 
+    QPixmap pixelatedPixmap = mPixmapPtr->scaled(
+        size(),
+        Qt::KeepAspectRatio,
+        Qt::FastTransformation
+        );
+    //painter.drawPixmap(event->rect().topLeft(), pixelatedPixmap);
+    painter.drawPixmap(0,0, pixelatedPixmap);
 
-    qDebug() << "PaintEvent: mPixmapPtr: " << mPixmapPtr;
     QImage mImage = mPixmapPtr->scaled(28, 28).toImage().convertToFormat(QImage::Format_Grayscale8);
     mImage.invertPixels();
     const uchar* pixelPtr = mImage.bits();
-    // qDebug() << "PaintEvent: " << QString::number(*pixelPtr);
 }
 
 void TabletCanvas::paintPixmap(QPainter &painter)
@@ -193,5 +195,6 @@ void TabletCanvas::updateBrush(const QMouseEvent *event)
 
 void TabletCanvas::resizeEvent(QResizeEvent *)
 {
+    resize(width(), width());
     initPixmap();
 }
