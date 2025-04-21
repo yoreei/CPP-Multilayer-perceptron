@@ -39,9 +39,6 @@ class Tab : public QDialog
 
 public:
     explicit Tab(QWidget *parent = nullptr);
-    QSize sizeHint() const override {
-        return QSize(500, 500);
-    }
 
 private:
     QTabWidget *tabWidget;

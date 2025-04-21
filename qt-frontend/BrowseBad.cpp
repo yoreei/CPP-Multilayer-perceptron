@@ -24,14 +24,11 @@ BrowseBad::BrowseBad(QWidget *parent)
     err = cppmlp_read_mnist(filename, filedata.data(), CPPMLP_READTYPE_IMAGES);
     assert(err == CPPMLP_GOOD);
 
-    auto maxElem = std::max_element(filedata.begin(), filedata.end());
-    qDebug() << "global max elem:" << *maxElem << "\n";
-
     img = QImage(dims.imageCols, dims.imageRows, QImage::Format_Grayscale8);
 
     updateImg();
 
-    int scale = 15;
+    int scale = 5;
     QSize fixed = QSize(dims.imageCols * scale, dims.imageRows * scale);
     setFixedSize(fixed);
 
@@ -49,17 +46,6 @@ void BrowseBad::updateImg(){
             img.setPixelColor(x, y, c);
         }
     }
-
-    int skip2 = (currentImgIdx + 1) * dims.imageRows * dims.imageCols;
-    auto maxElem = std::max_element(filedata.begin() + skip, filedata.begin() + skip2);
-    qDebug() << "current max elem:" << *maxElem << "\n";
-
-    qDebug() << "image:";
-    QString str="";
-    for (auto i = filedata.begin() + skip; i < filedata.begin() + skip2; ++ i){
-        str = str + QString::number(*i) + " ";
-    }
-    qDebug() << str;
 }
 
 void BrowseBad::paintEvent(QPaintEvent *)

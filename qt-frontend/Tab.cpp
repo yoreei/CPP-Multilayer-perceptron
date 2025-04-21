@@ -7,17 +7,42 @@
 #include "BrowseBad.h"
 #include "DrawPredict.h"
 
+
+void dumpWidgetTree(QWidget* w, int depth = 0)
+{
+    QString indent(depth*2, ' ');
+    qDebug() << indent
+             << w->metaObject()->className()
+             << w->objectName()
+             << w->geometry()
+             << w->sizePolicy()
+             << "hint: " << w->sizeHint();
+    for (QObject* c : w->children()) {
+        if (QWidget* cw = qobject_cast<QWidget*>(c))
+            dumpWidgetTree(cw, depth+1);
+    }
+}
+
 //! [0]
 Tab::Tab(QWidget *parent)
     : QDialog(parent)
 {
     tabWidget = new QTabWidget;
-    tabWidget->addTab(new DrawPredictTab(),tr("🖌️Draw Predict"));
-    tabWidget->addTab(new BrowseBadTab(), tr("👎Browse Bad"));
+
+    // int fixedW = 28 * 13;
+    // setFixedWidth(fixedW);                               // lock the width
+
+     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
+
+    tabWidget->addTab(new DrawPredictTab(this),tr("🖌️Draw Predict"));
+    tabWidget->addTab(new BrowseBadTab(this), tr("👎Browse Bad"));
     QVBoxLayout *mainLayout = new QVBoxLayout;
     mainLayout->addWidget(tabWidget);
     setLayout(mainLayout);
     setWindowTitle(tr("MLP with C++"));
+
+    QShortcut* enterShortcut = new QShortcut(QKeySequence("Ctrl+A"), this);
+    connect(enterShortcut, &QShortcut::activated, this, [this](){dumpWidgetTree(this);});
 }
 //! [5]
 

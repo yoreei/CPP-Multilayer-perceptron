@@ -20,11 +20,11 @@ void MlpWorker::doWork() {
     while (!QThread::currentThread()->isInterruptionRequested()) {
         // prepare data:
         int side = 28;
-        mImage = pixmapPtr->scaled(side, side).toImage().convertToFormat(QImage::Format_Grayscale8);
-        mImage.invertPixels();
+        // mImage = pixmapPtr->scaled(side, side).toImage().convertToFormat(QImage::Format_Grayscale8);
+        mImage = pixmapPtr->toImage().convertToFormat(QImage::Format_Grayscale8);
+        // mImage.invertPixels();
 
         const uchar* pixelPtr = mImage.bits();
-        //qDebug() << "workerThread: 1st pixel " << QString::number(*pixelPtr);
         QString mlpInputString = "";
         for (int i = 0; i < side * side; ++i) {
             mlpInput[i] = (*(pixelPtr + i)) / 255.0f;

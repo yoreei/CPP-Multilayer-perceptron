@@ -29,7 +29,7 @@ public:
                     TiltValuator, VTiltValuator, HTiltValuator, NoValuator };
     Q_ENUM(Valuator)
 
-    TabletCanvas(QPixmap* pixmapPtrRef);
+    TabletCanvas(QPixmap* pixmapPtrRef, QWidget* parent);
 
     bool saveImage();
     //bool loadImage(const QString &file);
@@ -60,19 +60,23 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
 
 private:
+    // these two just dont work for maintaining 1:1 aspect ratio:wa
+    // bool hasHeightForWidth() const override { return true; }
+    // int heightForWidth(int w) const override { return w; }
     qreal pressureToWidth(qreal pressure);
     void paintPixmap(QPainter &painter);
     void updateBrush(const QTabletEvent *event);
     void updateBrush(const QMouseEvent *event);
+    QPointF mapTo28(const QPointF& widgetPos);
     //void updateCursor(const QTabletEvent *event);
 
     Valuator m_alphaChannelValuator = TangentialPressureValuator;
     Valuator m_colorSaturationValuator = NoValuator;
     Valuator m_lineWidthValuator = PressureValuator;
-    QColor m_color = Qt::black;
+    QColor m_color = Qt::white;
     QBrush m_brush;
     QPen m_pen;
-    float penSize = 30;
+    float penSize = 3;
     bool mDrawing = false;
     QPixmap* mPixmapPtr;
 
