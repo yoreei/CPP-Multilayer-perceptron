@@ -1,7 +1,3 @@
-
-// Copyright (C) 2016 The Qt Company Ltd.
-// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR BSD-3-Clause
-
 #ifndef TABLETCANVAS_H
 #define TABLETCANVAS_H
 
@@ -12,14 +8,12 @@
 #include <QPoint>
 #include <QTabletEvent>
 #include <QWidget>
-#include <memory>
 
 QT_BEGIN_NAMESPACE
 class QPaintEvent;
 class QString;
 QT_END_NAMESPACE
 
-//! [0]
 class TabletCanvas : public QWidget
 {
     Q_OBJECT
@@ -32,7 +26,6 @@ public:
     TabletCanvas(QPixmap* pixmapPtrRef, QWidget* parent);
 
     bool saveImage();
-    //bool loadImage(const QString &file);
     void clear();
     void setAlphaChannelValuator(Valuator type)
         { m_alphaChannelValuator = type; }
@@ -40,35 +33,38 @@ public:
         { m_colorSaturationValuator = type; }
     void setLineWidthType(Valuator type)
         { m_lineWidthValuator = type; }
-    void setColor(const QColor &c)
-        { if (c.isValid()) m_color = c; }
-    QColor color() const
-        { return m_color; }
     void initPixmap();
 protected:
-    // For table input
+    // For tablet input
     void tabletEvent(QTabletEvent *event) override;
 
     // For mouse input
     void mouseMoveEvent(QMouseEvent *event) override;
-    // We might need these in the future but for now we don't:
-    //void mousePressEvent(QMouseEvent *event) override;
-    //void mouseReleaseEvent(QMouseEvent *event) override;
 
-    // For redrawing the widget
     void paintEvent(QPaintEvent *event) override;
-    void resizeEvent(QResizeEvent *event) override;
+
+    void resizeEvent(QResizeEvent *) override
+    {
+        // resize in resizeEvent is a bad approach but is the easiest way to ensure
+        // a pixel-specific size for our widget.
+        resize(canvasSize);
+    }
 
 private:
-    // these two just dont work for maintaining 1:1 aspect ratio:wa
+
+    virtual QSize sizeHint() const override {
+        return canvasSize;
+    }
+
+    // These two overloads just dont work for maintaining 1:1 aspect ratio
     // bool hasHeightForWidth() const override { return true; }
     // int heightForWidth(int w) const override { return w; }
+
     qreal pressureToWidth(qreal pressure);
     void paintPixmap(QPainter &painter);
     void updateBrush(const QTabletEvent *event);
     void updateBrush(const QMouseEvent *event);
     QPointF mapTo28(const QPointF& widgetPos);
-    //void updateCursor(const QTabletEvent *event);
 
     Valuator m_alphaChannelValuator = TangentialPressureValuator;
     Valuator m_colorSaturationValuator = NoValuator;
@@ -76,9 +72,10 @@ private:
     QColor m_color = Qt::white;
     QBrush m_brush;
     QPen m_pen;
-    float penSize = 3;
+    float penSize = 2.5;
     bool mDrawing = false;
     QPixmap* mPixmapPtr;
+    QSize canvasSize {346,346};
 
     struct Point {
         QPointF pos;
@@ -87,9 +84,9 @@ private:
     } mLastPoint, mCurrentPoint;
 
 signals:
-    // Declare a signal that can be emitted when needed
-    void bitmapUpdated(const QPixmap& pixmap);
+    // We don't need to signal a bitmap update because MlpWorker crunches
+    // constantly anyway
+    // void bitmapUpdated(const QPixmap& pixmap);
 };
-//! [0]
 
 #endif

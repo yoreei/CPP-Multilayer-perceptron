@@ -1,16 +1,9 @@
-
-// Copyright (C) 2016 The Qt Company Ltd.
-// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR BSD-3-Clause
-
 #include "TabletCanvas.h"
-
 #include <QCoreApplication>
 #include <QPainter>
 #include <QShortcut>
 #include <QtMath>
-#include <cstdlib>
 
-//! [0]
 TabletCanvas::TabletCanvas(QPixmap* pixmapPtr, QWidget* parent)
     : QWidget(parent), m_brush(m_color)
     , m_pen(m_brush, 1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin)
@@ -19,9 +12,6 @@ TabletCanvas::TabletCanvas(QPixmap* pixmapPtr, QWidget* parent)
 
     setMouseTracking(true);
     setAttribute(Qt::WA_TabletTracking); // see docs for `tabletTracking`
-
-    //setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    //setFixedSize(28*13, 28*13);
 
     QShortcut* shortcut = new QShortcut(QKeySequence("Ctrl+S"), this);
     QShortcut* spaceShortcut = new QShortcut(QKeySequence(Qt::Key_Space), this);
@@ -59,6 +49,8 @@ void TabletCanvas::tabletEvent(QTabletEvent *event)
         //updateCursor(event);
 //#endif
         if (mDrawing) {
+            updateBrush(event);
+            m_pen.setColor(m_color);
             QPainter painter(mPixmapPtr);
             paintPixmap(painter);
             // emit bitmapUpdated(mPixmapPtr.get()); // possible optimization:
@@ -116,7 +108,7 @@ void TabletCanvas::initPixmap()
     // this is for high-resolution displays and smooth visuals:
     // qreal dpr = devicePixelRatio();
     // mPixmapPtr->setDevicePixelRatio(dpr);
-    mPixmapPtr->fill(Qt::black);
+    clear();
 }
 
 void TabletCanvas::paintEvent(QPaintEvent *event)
@@ -129,40 +121,31 @@ void TabletCanvas::paintEvent(QPaintEvent *event)
         Qt::KeepAspectRatio,
         Qt::FastTransformation
         );
-    //painter.drawPixmap(event->rect().topLeft(), pixelatedPixmap);
     painter.drawPixmap(0,0, pixelatedPixmap);
 
     QImage mImage = mPixmapPtr->scaled(28, 28).toImage().convertToFormat(QImage::Format_Grayscale8);
     mImage.invertPixels();
-    const uchar* pixelPtr = mImage.bits();
 }
 
 void TabletCanvas::paintPixmap(QPainter &painter)
 {
     painter.setRenderHint(QPainter::Antialiasing);
-    qreal maxPenRadius = pressureToWidth(1.0); // do we need this???
+    qreal maxPenRadius = pressureToWidth(1.0);
     painter.setPen(m_pen);
     painter.drawLine(mLastPoint.pos, mCurrentPoint.pos);
     update(QRect(mLastPoint.pos.toPoint(), mCurrentPoint.pos.toPoint()).normalized()
            .adjusted(-maxPenRadius, -maxPenRadius, maxPenRadius, maxPenRadius));
 }
 
+/// pressure is from 0 to 1
 qreal TabletCanvas::pressureToWidth(qreal pressure)
 {
-    qreal pressureSens = penSize;
-    return pressure * pressureSens + penSize;
+    return penSize + (pressure - .8f) * penSize * 0.5;
 }
 
 void TabletCanvas::updateBrush(const QTabletEvent *event)
 {
     const auto& capabilities = event->pointingDevice()->capabilities();
-    // int vValue = int(((event->yTilt() + 60.0) / 120.0) * 255);
-    // int hValue = int(((event->xTilt() + 60.0) / 120.0) * 255);
-    int hue = 0;
-    int saturation = 0;
-    int value = 0;
-    int alpha = 255;
-    m_color.setHsv(hue, saturation, value, alpha);
 
     if (capabilities.testFlag(QPointingDevice::Capability::Rotation)) {
         mCurrentPoint.rotation = event->rotation();
@@ -179,22 +162,14 @@ void TabletCanvas::updateBrush(const QTabletEvent *event)
     }
 
     m_brush.setColor(m_color);
-    m_brush.setColor(m_color);
     m_pen.setColor(m_color);
-    }
+}
 
 void TabletCanvas::updateBrush(const QMouseEvent *event)
 {
-    // stay with default settings?
-
-    // m_brush.setColor(Qt::black);
-    // m_pen.setColor(Qt::black);
+    m_brush.setColor(Qt::white);
+    m_pen.setColor(Qt::white);
     m_pen.setWidthF(penSize);
 }
 
 
-void TabletCanvas::resizeEvent(QResizeEvent *)
-{
-    resize(width(), width());
-    initPixmap();
-}
