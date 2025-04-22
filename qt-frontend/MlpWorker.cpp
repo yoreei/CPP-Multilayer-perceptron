@@ -6,7 +6,11 @@
 
 void MlpWorker::doWork() {
     assert(pixmapPtr);
-    float mlpInput[28*28];
+
+    // `side` is hardcoded for the MNIST database
+    const int side = 28;
+
+    float mlpInput[side*side];
     QImage mImage;
     CppMlpHndl mlpHndl;
     qDebug() << "initializing cppmlp";
@@ -19,10 +23,7 @@ void MlpWorker::doWork() {
     qDebug() << "workerThread: mPixmapPtr " << pixmapPtr;
     while (!QThread::currentThread()->isInterruptionRequested()) {
         // prepare data:
-        int side = 28;
-        // mImage = pixmapPtr->scaled(side, side).toImage().convertToFormat(QImage::Format_Grayscale8);
         mImage = pixmapPtr->toImage().convertToFormat(QImage::Format_Grayscale8);
-        // mImage.invertPixels();
 
         const uchar* pixelPtr = mImage.bits();
         QString mlpInputString = "";
@@ -39,7 +40,6 @@ void MlpWorker::doWork() {
 
         emit dataUpdated(output);
 
-        // todo slots
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 

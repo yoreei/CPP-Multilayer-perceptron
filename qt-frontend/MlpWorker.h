@@ -4,7 +4,6 @@
 #include <QImage>
 #include <QObject>
 #include <array>
-#include <atomic>
 
 class QPixmap;
 class MlpWorker : public QObject {

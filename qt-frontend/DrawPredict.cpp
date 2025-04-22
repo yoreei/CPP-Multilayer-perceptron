@@ -16,7 +16,6 @@ constexpr auto SCALE = 20;
 DrawPredict::DrawPredict(QWidget *parent)
     : QWidget{parent}
 {
-
     //setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Expanding);
 
     pixmap = std::make_unique<QPixmap>();
@@ -39,12 +38,10 @@ DrawPredict::DrawPredict(QWidget *parent)
     TabletCanvas *canvas = new TabletCanvas(pixmap.get(), this);
     mainLayout->addWidget(canvas);
 
-    QHBoxLayout *bottomLayout = new QHBoxLayout;
-
     // Create a widget that acts like a table with 1 header row and 1 body row.
     QWidget* tableWidget = new QWidget(this);
     QGridLayout* tableLayout = new QGridLayout(tableWidget);
-    tableLayout->setSpacing(18);  // Optional: adjust spacing as needed.
+    tableLayout->setSpacing(10);  // Optional: adjust spacing as needed.
 
     // Loop to create header (columns 0 to 9) and a corresponding body cell with a placeholder float.
     for (int col = 0; col < 10; col++) {
@@ -60,26 +57,7 @@ DrawPredict::DrawPredict(QWidget *parent)
     }
     tableWidget->setLayout(tableLayout);
 
-    // Add the table widget to the bottom layout.
-    bottomLayout->addWidget(tableWidget);
-
-    // Add a stretch so the table stays on the left.
-    bottomLayout->addStretch();
-
-    QVBoxLayout* bottomGroup = new QVBoxLayout;
-    bottomGroup->addWidget(tableWidget);
-
-    // now add that group into your bottomLayout, then the stretch:
-    bottomLayout->addLayout(bottomGroup);
-
-    // to the left of clearButton, in bottomLayoutWidget
-    // header: from 0 to 9 horizontally
-    // body: placeholder floats per col
-
-    QWidget* bottomLayoutWidget = new QWidget(this);
-    bottomLayoutWidget->setLayout(bottomLayout);
-    mainLayout->addWidget(bottomLayoutWidget, 0);
-    mainLayout->addStretch();
+    mainLayout->addWidget(tableWidget, 0);
 
     setLayout(mainLayout);
 }

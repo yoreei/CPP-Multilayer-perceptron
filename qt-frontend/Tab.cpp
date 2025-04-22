@@ -1,6 +1,3 @@
-// Copyright (C) 2016 The Qt Company Ltd.
-// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR BSD-3-Clause
-
 #include <QtWidgets>
 
 #include "Tab.h"
@@ -23,16 +20,13 @@ void dumpWidgetTree(QWidget* w, int depth = 0)
     }
 }
 
-//! [0]
 Tab::Tab(QWidget *parent)
     : QDialog(parent)
 {
     tabWidget = new QTabWidget;
 
-    // int fixedW = 28 * 13;
-    // setFixedWidth(fixedW);                               // lock the width
-
-     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
+    // Size of Tab widget is determined by the child widgets
+    setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
 
     tabWidget->addTab(new DrawPredictTab(this),tr("🖌️Draw Predict"));
     tabWidget->addTab(new BrowseBadTab(this), tr("👎Browse Bad"));
@@ -44,9 +38,7 @@ Tab::Tab(QWidget *parent)
     QShortcut* enterShortcut = new QShortcut(QKeySequence("Ctrl+A"), this);
     connect(enterShortcut, &QShortcut::activated, this, [this](){dumpWidgetTree(this);});
 }
-//! [5]
 
-//! [6]
 DrawPredictTab::DrawPredictTab(QWidget *parent)
     : QWidget(parent)
 {

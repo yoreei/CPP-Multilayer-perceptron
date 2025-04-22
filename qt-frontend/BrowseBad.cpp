@@ -28,9 +28,9 @@ BrowseBad::BrowseBad(QWidget *parent)
 
     updateImg();
 
+    QSize canvasSize {346,346};
     int scale = 5;
-    QSize fixed = QSize(dims.imageCols * scale, dims.imageRows * scale);
-    setFixedSize(fixed);
+    setFixedSize(canvasSize);
 
     // ensure layouts won’t stretch it:
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
@@ -64,10 +64,7 @@ void BrowseBad::paintEvent(QPaintEvent *)
         Qt::FastTransformation    // <-- nearest‑neighbor
     );
 
-    // center it
-    int x = (width()  - up.width())  / 2;
-    int y = (height() - up.height()) / 2;
-    p.drawPixmap(x, y, up);
+    p.drawPixmap(0, 0, up);
 
 }
 
