@@ -34,15 +34,6 @@ using EigenMatrix = Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::
 using EigenRowVectorf = Eigen::RowVector<float, Eigen::Dynamic>;
 using EigenVectorf = Eigen::Vector<float, Eigen::Dynamic>;
 
-
-uint32_t swapEndian(uint32_t val) {
-    return ((val >> 24) & 0xff) |
-        ((val << 8) & 0xff0000) |
-        ((val >> 8) & 0xff00) |
-        ((val << 24) & 0xff000000);
-}
-
-
 struct Dataset;
 template <typename T256>
 class MlpVector : private std::vector<T256> {
@@ -1136,7 +1127,7 @@ int main() {
     size_t hiddenSize = 128;
     const auto maxLabel = std::max_element(trainData.y.data32(), trainData.y.end32());
     size_t outputSize = *maxLabel + 1;
-    int miniBatchSize = 128;
+    int miniBatchSize = 64;
     MLP mlp{ inputSize, hiddenSize, outputSize, miniBatchSize, 0.01f };
 
     TimePoint begin = getTimePoint();
