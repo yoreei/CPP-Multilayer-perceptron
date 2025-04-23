@@ -1,4 +1,4 @@
-#include "BrowseBad.h"
+#include "BrowseMnist.h"
 #include <QFontMetricsF>
 #include <QPainter>
 #include <QVBoxLayout>

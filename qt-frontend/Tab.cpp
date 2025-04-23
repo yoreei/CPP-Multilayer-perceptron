@@ -1,7 +1,7 @@
 #include <QtWidgets>
 
 #include "Tab.h"
-#include "BrowseBad.h"
+#include "BrowseMnist.h"
 #include "DrawPredict.h"
 
 
@@ -28,12 +28,12 @@ Tab::Tab(QWidget *parent)
     // Size of Tab widget is determined by the child widgets
     setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Minimum);
 
-    tabWidget->addTab(new DrawPredictTab(this),tr("🖌️Draw Predict"));
-    tabWidget->addTab(new BrowseBadTab(this), tr("👎Browse Bad"));
+    tabWidget->addTab(new DrawPredictTab(this),tr("Live Predict"));
+    tabWidget->addTab(new BrowseBadTab(this), tr("Browse Mnist"));
     QVBoxLayout *mainLayout = new QVBoxLayout;
     mainLayout->addWidget(tabWidget);
     setLayout(mainLayout);
-    setWindowTitle(tr("MLP with C++"));
+    setWindowTitle(tr("Danny's MLP with C++"));
 
     QShortcut* enterShortcut = new QShortcut(QKeySequence("Ctrl+A"), this);
     connect(enterShortcut, &QShortcut::activated, this, [this](){dumpWidgetTree(this);});

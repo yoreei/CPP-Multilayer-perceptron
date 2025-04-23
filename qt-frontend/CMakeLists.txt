@@ -17,8 +17,8 @@ find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
 
 set(PROJECT_SOURCES
         main.cpp
-        BrowseBad.cpp
-        BrowseBad.h
+        BrowseMnist.cpp
+        BrowseMnist.h
         Tab.cpp
         Tab.h
         DrawPredict.cpp
