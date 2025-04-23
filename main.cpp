@@ -370,7 +370,7 @@ int main() {
 	size_t hiddenSize = 128;
 	const auto [_, maxLabel] = std::minmax_element(trainData.labels.begin(), trainData.labels.end());
 	size_t outputSize = *maxLabel + 1;
-	int miniBatchSize = 128;
+	int miniBatchSize = 64;
 	MLP mlp{ inputSize, hiddenSize, outputSize, miniBatchSize, 0.01f };
 
 	Time begin = getTime();
