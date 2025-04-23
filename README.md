@@ -4,7 +4,7 @@ This is a Multilayer Perceptron (MLP) written from scratch in C++ with a portabl
 
 This is my original work for the ML@Chaos (Chaos Camp Vol.2) course.
 
-You can access the final presentation slides here: https://www.canva.com/design/DAGe6p4vc_I/1G5lmcWNNLghCjH7JtL0qQ/edit?utm_content=DAGe6p4vc_I&utm_campaign=designshare&utm_medium=link2&utm_source=sharebutton
+You can access the final presentation slides here: [on canva](https://www.canva.com/design/DAGe6p4vc_I/1G5lmcWNNLghCjH7JtL0qQ/edit?utm_content=DAGe6p4vc_I&utm_campaign=designshare&utm_medium=link2&utm_source=sharebutton)
 (they cover only the Eigen project, the other projects were added after the project submission)
 
 ## Implementations
@@ -23,6 +23,7 @@ The *cuBlas* solution also builds as a library with a portable C interface, see 
 There is a Qt6 GUI project in folder **qt-frontend/** that lets you draw while the cuBlasMlp library analyzes your image in real-time. It also lets you browse the MNIST dataset.
 Video Demonstration of the GUI:
 
+[https://youtu.be/9dwyB3GEBBo](https://youtu.be/9dwyB3GEBBo)
 
 ## Benchmarks
 
@@ -37,13 +38,13 @@ All projects compiled for AVX2 & /fp:fast
 AMD Ryzen 9 5950X 16-Cores 3401Mhz, Rtx 3070 Ti
 
 Mini-batch size: 64
-- Eigen : 30s
-- openBlas & custom SIMD: ?
+- Eigen : 0.6s
+- openBlas & custom SIMD: 0.55s
 
 Mini-batch size: 128
-- Eigen\*: 111s
-- openBlas & custom SIMD: ?
-- cuBlas: ?
+- Eigen\*: 9.6s
+- openBlas & custom SIMD: 0.33s
+- cuBlas: 0.095s
 
 ### Intel Laptop Bench
 
@@ -56,12 +57,12 @@ Mini-batch size: 64
 Mini-batch size: 128
 - Eigen\*: 208s
 - openBlas & custom SIMD:  0.4s
-- cuBlas: 0.09s
+- cuBlas: 0.090s
 
 ### Eigen Remark
 
 Notice that Eigen has a problem with larger minibatches, specifically, matrices with more than 9984 elements are handled extremely slowly.
-This is not the case for openBlas & my custom SIMD operations, which are faster for larger minibatches (as they should be!)
+This is not the case for openBlas & my custom SIMD operations, which are faster for larger minibatches (as they should be!). For the Eigen project, there is also a huge difference between the Ryzen and the Intel benchmarks, favoring Ryzen.
 
 ## Usage
 
