@@ -399,3 +399,6 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+# Profiler sessions and per-user IDE files
+*.diagsession
+CMakeLists.txt.user*
