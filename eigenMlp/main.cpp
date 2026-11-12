@@ -47,7 +47,7 @@ MlpMatrix softmax(const MlpMatrix& x) {
 	MlpVectorf rowSum = exp_x.rowwise().sum();
 
 	// Divide each element by the sum of its row.
-	// The division is done column-wise using broadcasting via Eigen’s array interface.
+	// colwise() broadcasts rowSum across all columns.
 	MlpMatrix sm = exp_x.array().colwise() / rowSum.array();
 
 	return sm;
@@ -96,7 +96,7 @@ struct Dataset {
 		data.resize(numImages, numRows * numCols);
 
 		// Read image data (numImages * numRows*numCols bytes).
-		// We fill the matrix element‐by‐element.
+		// One byte per pixel.
 		for (size_t imgId = 0; imgId < numImages; ++imgId) {
 			for (size_t i = 0; i < actualRows * actualCols; ++i) {
 				char byte;

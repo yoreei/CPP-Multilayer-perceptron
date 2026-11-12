@@ -35,7 +35,7 @@ inline size_t pad8(size_t num) {
 
 
 inline __m256 cvt8epu8_8ps(const uint64_t chars8) {
-    // load the 64‑bit value into the lower part of a __m128i and zero the upper part
+    // load the 64-bit value into the lower half of a __m128i, upper half zeroed
     __m128i chars = _mm_cvtsi64_si128(static_cast<long long>(chars8));
 
     __m128i intsLow = _mm_cvtepu8_epi32(chars);          // lower 4 chars -> 32-bit ints

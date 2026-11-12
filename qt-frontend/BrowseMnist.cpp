@@ -12,7 +12,7 @@ BrowseBad::BrowseBad(QWidget *parent)
     // connect(ui->prev, &QToolButton::clicked, this, [this] { nextStep(-1); });
     // connect(ui->next, &QToolButton::clicked, this, [this] { nextStep(+1); });
 
-    // assume `float image[28*28]` has values in [0,1] (or [0,255] – see below)
+    // cppmlp_read_mnist returns pixels as floats in [0, 1]
 
     //const char* filename = "../assets.ignored/t10k-images.idx3-ubyte";
     const char* filename = "../assets.ignored/train-images.idx3-ubyte";
@@ -32,7 +32,7 @@ BrowseBad::BrowseBad(QWidget *parent)
     int scale = 5;
     setFixedSize(canvasSize);
 
-    // ensure layouts won’t stretch it:
+    // keep the fixed size inside layouts
     setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
 }
 
@@ -52,16 +52,16 @@ void BrowseBad::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
 
-    // turn OFF smooth pixmap transforms
+    // no smoothing, so the MNIST pixels stay square
     p.setRenderHint(QPainter::SmoothPixmapTransform, false);
 
-    // compute a block‑y scale to fill the widget, preserving aspect
+    // scale up to the widget size, keeping the aspect ratio
     QSize target = size();
     QPixmap pm = QPixmap::fromImage(img);
     QPixmap up = pm.scaled(
         target,
         Qt::KeepAspectRatio,
-        Qt::FastTransformation    // <-- nearest‑neighbor
+        Qt::FastTransformation    // nearest neighbor
     );
 
     p.drawPixmap(0, 0, up);

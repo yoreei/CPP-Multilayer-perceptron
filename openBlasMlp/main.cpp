@@ -181,7 +181,7 @@ struct MlpMatrix {
         }
     }
 
-    // C = αA ∗ B ∗ +βC
+    // C = alpha * op(A) * op(B) + beta * C
     template <MlpTransMask transMask = MlpNoneTrans>
     void gemm(const MlpMatrix& aMatrix, const MlpMatrix& bMatrix, float alpha = 1.f, float beta = 0.f) {
         float* C = data32(gemmOffset);

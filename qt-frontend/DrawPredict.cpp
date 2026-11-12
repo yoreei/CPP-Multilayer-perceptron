@@ -31,26 +31,24 @@ DrawPredict::DrawPredict(QWidget *parent)
 
     mlpThread->start();
 
-    // In your parent widget’s constructor:
+    // drawing canvas on top, prediction table below
     auto *mainLayout = new QVBoxLayout(this);
 
     setFixedWidth(28*13);
     TabletCanvas *canvas = new TabletCanvas(pixmap.get(), this);
     mainLayout->addWidget(canvas);
 
-    // Create a widget that acts like a table with 1 header row and 1 body row.
+    // Table with the digits 0-9 in the first row and their probabilities in the second.
     QWidget* tableWidget = new QWidget(this);
     QGridLayout* tableLayout = new QGridLayout(tableWidget);
-    tableLayout->setSpacing(10);  // Optional: adjust spacing as needed.
+    tableLayout->setSpacing(10);
 
-    // Loop to create header (columns 0 to 9) and a corresponding body cell with a placeholder float.
     for (int col = 0; col < 10; col++) {
-        // Header label with the column number.
         QLabel* headerLabel = new QLabel(QString::number(col), tableWidget);
         headerLabel->setAlignment(Qt::AlignCenter);
         tableLayout->addWidget(headerLabel, 0, col);
 
-        // Body label with a placeholder float value.
+        // filled in by updateLabels() once predictions arrive
         outputLabels[col] = new QLabel(".00", tableWidget);
         outputLabels[col]->setAlignment(Qt::AlignCenter);
         tableLayout->addWidget(outputLabels[col], 1, col);
