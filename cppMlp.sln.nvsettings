@@ -1,2 +1,0 @@
-[WarpWatch]
-Expressions=block_max, thread_max, blockIdx, thread_sum, block_sum

@@ -4,11 +4,11 @@ Summary of two Visual Studio profiler sessions (`.diagsession`) that used to be 
 
 ## `preallocOnes.diagsession`
 
-Empty file (0 bytes), committed in `b59c2bd` ("fix dupRows reallocation bug"). It held no data. The name refers to the "after preallocating ones" step in [benchCublas.txt](../benchCublas.txt).
+Empty file (0 bytes), committed in `33f03e8` ("fix dupRows reallocation bug"). It held no data. The name refers to the "after preallocating ones" step in [benchCublas.txt](benchCublas.txt).
 
 ## `Report20250302-1932.diagsession`
 
-Committed in `523e419` ("cuComputeBias; equal perf"), recorded 2025-03-02 19:32 with VS 2022 17.12, using the **CPU Usage** tool (sampling, about 1 ms interval, with stacks).
+Committed in `d21fcec` ("cuComputeBias; equal perf"), recorded 2025-03-02 19:32 with VS 2022 17.12, using the **CPU Usage** tool (sampling, about 1 ms interval, with stacks).
 
 - **Profiled program:** `x64/Instrumentation/cuBlasProj.exe` (cuBlas project, Instrumentation configuration)
 - **Machine:** the Ryzen 9 5950X (32 logical cores) + RTX 3070 Ti desktop from the README
