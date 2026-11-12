@@ -23,7 +23,7 @@ TabletCanvas::TabletCanvas(QPixmap* pixmapPtr, QWidget* parent)
 
 bool TabletCanvas::saveImage()
 {
-    return mPixmapPtr->scaled(28, 28).save("C:\\DATA\\git\\cpp-mlp\\assets.ignored\\tabletOut.png");
+    return mPixmapPtr->scaled(28, 28).save("../assets.ignored/tabletOut.png");
 }
 
 void TabletCanvas::clear()

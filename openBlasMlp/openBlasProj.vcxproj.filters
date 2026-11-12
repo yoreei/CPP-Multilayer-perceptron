@@ -23,7 +23,7 @@
     <CopyFileToFolders Include="..\dll\libopenblas.dll" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="simdUtil.h">
+    <ClInclude Include="..\include\common\simdUtil.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

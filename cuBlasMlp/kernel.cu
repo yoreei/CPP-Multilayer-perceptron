@@ -399,7 +399,7 @@ struct GPUMatrix : public PODMatrix<T> {
 			bTransOpt = CUBLAS_OP_T;
 		}
 		else {
-			static_assert(false, "wrong mask");
+			static_assert(transMask != transMask, "wrong mask");
 		}
 
 		if (M != rows || N != cols) {

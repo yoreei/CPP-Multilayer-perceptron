@@ -269,6 +269,10 @@
     <ClInclude Include="..\include\common\simdUtil.h" />
     <ClInclude Include="cublas_mlp_api.h" />
   </ItemGroup>
+  <PropertyGroup>
+    <!-- Run from the solution folder so assets.ignored/ (MNIST) is found -->
+    <LocalDebuggerWorkingDirectory>$(SolutionDir)</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
     <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 12.8.targets" />

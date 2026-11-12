@@ -240,7 +240,7 @@ struct MlpMatrix {
             bTransOpt = CblasTrans;
         }
         else {
-            static_assert(false, "wrong mask");
+            static_assert(transMask != transMask, "wrong mask");
         }
 
         if (M != rows || N != cols) {
